@@ -110,3 +110,11 @@
 - Corrected the inherited singular-media compatibility test to exercise the documented public router boundary.
 - Production TypeScript config no longer emits test files into `dist`.
 - Verified publish gate: **31/31 test files, 312/312 tests**, production `tsc --noEmit` passing, clean `tsc` build passing, and `npm pack --dry-run` passing.
+
+## 2026-09-04 — Remove inherited postgres-shared runtime dependency
+
+- Removed the runtime dependency on `@dotdo/postgres-shared`.
+- Retained the existing CSP/security-header exports locally in `src/security.ts` for API compatibility; provenance is recorded in `NOTICE.md`.
+- Internalized the browser/Worker-safe API-key comparison helper in `src/crypto.ts`.
+- Replaced the inherited unquoted-identifier validator with schema-cache-oriented resource-name validation. PostgREST SQL generation quotes identifiers; names requiring PostgreSQL quoting must not be rejected merely for punctuation, spaces, Unicode, or case.
+- Updated the inherited CORS error test so it tests CORS-on-validation-error without asserting the obsolete rule that a hyphenated resource name is invalid.

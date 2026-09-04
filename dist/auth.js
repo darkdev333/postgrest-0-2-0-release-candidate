@@ -7,7 +7,7 @@
  *
  * @module postgrest-compat/auth
  */
-import { constantTimeCompare } from '@dotdo/postgres-shared';
+import { constantTimeCompare } from './crypto.js';
 // --- Constants ---
 /** Number of parts in a valid JWT (header.payload.signature) */
 const JWT_PART_COUNT = 3;

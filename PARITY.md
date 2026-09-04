@@ -141,3 +141,8 @@ This supersedes the earlier 259/259 + focused-probe checkpoint.
 7. Remaining SQLSTATE -> PostgREST error/status catalog and response-header edge cases.
 
 DLR currently uses flat queries plus TypeScript joins as a temporary Application Preview integration workaround. That does not waive embedding parity for generated applications in general.
+
+
+### Dependency cleanup gate (2026-09-04)
+
+Before the browser smoke-test phase, the inherited `@dotdo/postgres-shared` runtime dependency was removed. CSP exports remain locally source-compatible, API-key comparison is local, and resource validation was aligned with PostgREST's quoted-identifier/schema-cache model rather than the abandoned package's unquoted-identifier regex. The full suite and production build are re-run after this change.

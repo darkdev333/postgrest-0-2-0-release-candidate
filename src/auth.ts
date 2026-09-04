@@ -9,7 +9,7 @@
  */
 
 import type { Context, MiddlewareHandler } from 'hono'
-import { constantTimeCompare } from '@dotdo/postgres-shared'
+import { constantTimeCompare } from './crypto.js'
 
 // --- Constants ---
 
