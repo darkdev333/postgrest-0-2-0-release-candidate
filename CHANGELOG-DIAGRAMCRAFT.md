@@ -118,3 +118,11 @@
 - Internalized the browser/Worker-safe API-key comparison helper in `src/crypto.ts`.
 - Replaced the inherited unquoted-identifier validator with schema-cache-oriented resource-name validation. PostgREST SQL generation quotes identifiers; names requiring PostgreSQL quoting must not be rejected merely for punctuation, spaces, Unicode, or case.
 - Updated the inherited CORS error test so it tests CORS-on-validation-error without asserting the obsolete rule that a hyphenated resource name is invalid.
+
+## 2026-09-04 — Browser integration placeholder hardening
+
+- Application Preview smoke testing proved the full browser path through real `@supabase/supabase-js` / `@supabase/postgrest-js`, Hono, the compatibility adapter, `SQLExecutor`, and PGlite for unbound-value reads, range/count, FK discovery, and relationship embedding.
+- The first bound-value requests exposed `$N` placeholders arriving at the `SQLExecutor` boundary as bare integers (`$1` -> `1`) even though the checked-in TypeScript/`dist` builders emitted valid template-literal placeholders.
+- Removed `${...}` syntax from all PostgreSQL placeholder generators and now construct placeholders with string concatenation (`'$' + n`) in the legacy builder, insert/update/RPC compilers, and replacement read SQL compiler. This is semantically identical in JavaScript while remaining robust through the Application Preview source/bundle pipeline.
+- Tightened embedded-route SQL assertions and added a public-router boundary regression proving bound parameters reach `SQLExecutor` as `$1` plus the corresponding parameter array.
+- Verified gate: **32/32 Vitest files, 316/316 tests**, production `tsc --noEmit` passing, and clean `tsc` build passing.

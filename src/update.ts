@@ -11,7 +11,7 @@ export function buildUpdateStatement(table:string,data:Record<string,unknown>,fi
   const columns=options.columns??Object.keys(data);
   if(columns.length===0)return null;
   const params:unknown[]=[];
-  const add=(value:unknown)=>{params.push(value);return `$${params.length}`;};
+  const add=(value:unknown)=>{params.push(value);return '$' + params.length;};
   const assignments=columns.map(column=>{
     if(Object.prototype.hasOwnProperty.call(data,column))return`${q(column)} = ${add(data[column])}`;
     return options.missing==='default'?`${q(column)} = DEFAULT`:`${q(column)} = ${add(null)}`;

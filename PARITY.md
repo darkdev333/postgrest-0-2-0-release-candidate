@@ -146,3 +146,9 @@ DLR currently uses flat queries plus TypeScript joins as a temporary Application
 ### Dependency cleanup gate (2026-09-04)
 
 Before the browser smoke-test phase, the inherited `@dotdo/postgres-shared` runtime dependency was removed. CSP exports remain locally source-compatible, API-key comparison is local, and resource validation was aligned with PostgREST's quoted-identifier/schema-cache model rather than the abandoned package's unquoted-identifier regex. The full suite and production build are re-run after this change.
+
+### Application Preview bound-parameter integration fix (2026-09-04)
+
+The first real browser/PGlite smoke run found that bound-value SQL reached `SQLExecutor` with the `$` prefix stripped from PostgreSQL placeholders despite source and compiled `dist` containing valid `` `$${n}` `` JavaScript. To avoid any source/bundle interpolation ambiguity, every placeholder generator now uses `'$' + n` instead. This covers flat queries, replacement read-plan SQL, INSERT/PATCH/DELETE, and RPC. Public-router boundary coverage now asserts both SQL `$1` and the matching parameter array.
+
+Current verified gate after this integration fix: **32/32 test files, 316/316 tests**, production typecheck passing, clean production build passing.

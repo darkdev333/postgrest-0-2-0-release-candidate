@@ -6,7 +6,7 @@ export function buildUpdateStatement(table, data, filters, options = {}) {
     if (columns.length === 0)
         return null;
     const params = [];
-    const add = (value) => { params.push(value); return `$${params.length}`; };
+    const add = (value) => { params.push(value); return '$' + params.length; };
     const assignments = columns.map(column => {
         if (Object.prototype.hasOwnProperty.call(data, column))
             return `${q(column)} = ${add(data[column])}`;

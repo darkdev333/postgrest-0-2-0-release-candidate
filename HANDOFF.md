@@ -144,3 +144,7 @@ Keep current after coherent batches: `PARITY.md`, `INTEGRATION.md`, `CHANGELOG-D
 ## Resume behavior
 
 Inspect upstream first, implement the smallest coherent parity slice, add upstream-derived tests, run the executable gate available, synchronize `src`/`dist`, persist the checkpoint, then continue. Do not stop at a proposal when implementation can proceed.
+
+## 2026-09-04 integration feedback checkpoint
+
+Application Preview has now proven the real client path through Supabase/PostgREST clients -> Hono adapter -> `SQLExecutor` -> browser PGlite. The first blocker was placeholder transport: template-literal placeholder generation (`` `$${n}` ``) was observed as bare `1`, `2`, ... at the executor boundary in the preview pipeline. All placeholder generators were changed to `'$' + n`, with a public-router executor-boundary regression. Verified gate is now **316/316** plus clean typecheck/build. Re-run the exact smoke suite before expanding integration coverage.

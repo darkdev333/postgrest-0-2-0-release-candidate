@@ -407,7 +407,7 @@ export class QueryBuilder {
      */
     addParam(value) {
         this.params.push(value);
-        return `$${this.paramIndex++}`;
+        return '$' + this.paramIndex++;
     }
     /**
      * Reset the builder state for a new query.

@@ -41,7 +41,7 @@ export function buildInsertStatement(
   const params: unknown[] = [];
   const addParam = (value: unknown): string => {
     params.push(value);
-    return `$${params.length}`;
+    return '$' + params.length;
   };
 
   const values = rows.map(row => {
