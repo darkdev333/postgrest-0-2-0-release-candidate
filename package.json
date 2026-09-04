@@ -28,7 +28,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@dotdo/postgres-shared": "0.1.1",
     "hono": "4.11.4"
   },
   "devDependencies": {
@@ -58,11 +57,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/darkdev333/postgrest-0-2-0-release-candidate.git"
+    "url": "git+https://github.com/darkdev333/postgrest-0.2.0.git"
   },
-  "homepage": "https://github.com/darkdev333/postgrest-0-2-0-release-candidate#readme",
+  "homepage": "https://github.com/darkdev333/postgrest-0.2.0#readme",
   "bugs": {
-    "url": "https://github.com/darkdev333/postgrest-0-2-0-release-candidate/issues"
+    "url": "https://github.com/darkdev333/postgrest-0.2.0/issues"
   },
   "private": true
 }

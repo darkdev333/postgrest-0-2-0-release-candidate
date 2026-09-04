@@ -7,7 +7,7 @@ import { RoutineCache,matchRoutineByNamedArgs,routineSignature } from './routine
 import { buildRpcEnvelopeQuery,decodeRpcEnvelope,partitionGetRpcParams } from './rpc.js';
 import { buildUpdateStatement } from './update.js';
 import { parsePreferHeader,responsePreferences,setResponseHeaders,getResponseStatus,setCORSHeaders,buildLocationHeader,type PreferHeader,type CORSOptions,type ResponseHeaderOptions } from './headers.js';
-import { isValidIdentifier } from '@dotdo/postgres-shared/validation';
+import { isValidResourceName } from './validation.js';
 import { normalizePostgRESTError,requestedRangeNotSatisfiable,singularCardinalityError,maxAffectedViolation,maxAffectedRpcUnsupported,invalidPreferences,noRpc,ambiguousRpc } from './errors.js';
 import { acceptsSingularObject,SINGULAR_MEDIA_TYPE } from './media.js';
 import { negativeLimitDetails,offsideOffsetDetails,parseRangeRequest,readStatus } from './range.js';
@@ -27,7 +27,7 @@ function rangeFailure(c:Context,details:string,totalCount?:number,head=false):Re
 function missingColumnError(table:string,column:string){return{code:'PGRST204',details:null,hint:null,message:`Could not find the '${column}' column of '${table}' in the schema cache`};}
 export function createPostgRESTRouter(sql:SQLExecutor,options:PostgRESTRouterOptions={}):Hono{
  const router=new Hono(),parser=new PostgrestParser();
- const{schema='public',schemas,basePath='',maxLimit=1000,defaultLimit=100,schemaCacheTTL=60000,cors=true,corsOrigins,corsCredentials,corsMethods,corsAllowHeaders,corsExposeHeaders,corsMaxAge,validateTable=isValidIdentifier,validateFunction=isValidIdentifier,transactionContext,dbTxEnd=false}=options;
+ const{schema='public',schemas,basePath='',maxLimit=1000,defaultLimit=100,schemaCacheTTL=60000,cors=true,corsOrigins,corsCredentials,corsMethods,corsAllowHeaders,corsExposeHeaders,corsMaxAge,validateTable=isValidResourceName,validateFunction=isValidResourceName,transactionContext,dbTxEnd=false}=options;
  const allowedSchemas=schemas&&schemas.length?[...schemas]:[schema],caches=new Map<string,SchemaCache>(),routineCache=new RoutineCache(sql,schemaCacheTTL),baseBuilderOptions={maxLimit,defaultLimit};
  function cacheFor(activeSchema:string){let cache=caches.get(activeSchema);if(!cache){cache=new SchemaCache({schema:activeSchema,cacheTTL:schemaCacheTTL,queryFn:sql});caches.set(activeSchema,cache);}return cache;}
  function profileFor(c:Context){return selectSchemaProfile(c.req.method,c.req.header('Accept-Profile'),c.req.header('Content-Profile'),allowedSchemas);}

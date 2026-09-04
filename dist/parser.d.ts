@@ -180,10 +180,11 @@ export declare class PostgrestParser {
      *
      * Checks for:
      * - Empty or whitespace-only names
-     * - SQL injection patterns (semicolons, comments, UNION, etc.)
-     * - Valid PostgreSQL identifier format
-     * - Maximum identifier length
-     * - Presence in the allowlist
+     * - Empty or NUL-containing names
+     * - Presence in the schema-derived allowlist
+     *
+     * Resource names are not limited to PostgreSQL's unquoted identifier grammar.
+     * SQL generation is responsible for identifier quoting.
      *
      * @param tableName - The table name to validate
      * @param allowlist - Array of permitted table names

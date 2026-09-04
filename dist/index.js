@@ -16,5 +16,5 @@ export { normalizePostgRESTError, postgresStatus, singularCardinalityError, requ
 export { acceptsSingularObject, JSON_MEDIA_TYPE, SINGULAR_MEDIA_TYPE, SINGULAR_MEDIA_TYPE_SHORT } from './media.js';
 export { buildInsertStatement, applyInsertPreferenceHeaders } from './insert.js';
 export { hasTransactionCapability, withOptionalTransaction } from './executor.js';
-export { csp, securityHeaders, API_CSP_DEFAULTS, STRICT_WEB_CSP, DEVELOPMENT_CSP, CSP_PRESETS, buildCSPHeader, generateSecureNonce, getDefaultDirectives } from '@dotdo/postgres-shared/csp';
+export { csp, securityHeaders, API_CSP_DEFAULTS, STRICT_WEB_CSP, DEVELOPMENT_CSP, CSP_PRESETS, buildCSPHeader, generateSecureNonce, getDefaultDirectives } from './security.js';
 //# sourceMappingURL=index.js.map

@@ -12,7 +12,7 @@ import { acceptsSingularObject, SINGULAR_MEDIA_TYPE } from './media.js';
 import { invalidPreferences, ambiguousRelationship, noRelationship, notEmbedded, relatedOrderNotToOne, requestedRangeNotSatisfiable, singularCardinalityError } from './errors.js';
 import { negativeLimitDetails, offsideOffsetDetails, parseRangeRequest, readStatus } from './range.js';
 import { selectSchemaProfile } from './profiles.js';
-import { isValidIdentifier } from '@dotdo/postgres-shared/validation';
+import { isValidResourceName } from './validation.js';
 const DECIMAL_RADIX = 10;
 function hasEmbed(nodes) {
     return nodes.some(node => node.kind === 'embed');
@@ -42,7 +42,7 @@ function clampRootRange(plan, defaultLimit, maxLimit) {
 export function createPostgRESTRouter(sql, options = {}) {
     const app = new Hono();
     const base = createBaseRouter(sql, options);
-    const { schema = 'public', schemas, maxLimit = 1000, defaultLimit = 100, schemaCacheTTL = 60000, cors = true, corsOrigins, corsCredentials, corsMethods, corsAllowHeaders, corsExposeHeaders, corsMaxAge, validateTable = isValidIdentifier, transactionContext, dbTxEnd = false, } = options;
+    const { schema = 'public', schemas, maxLimit = 1000, defaultLimit = 100, schemaCacheTTL = 60000, cors = true, corsOrigins, corsCredentials, corsMethods, corsAllowHeaders, corsExposeHeaders, corsMaxAge, validateTable = isValidResourceName, transactionContext, dbTxEnd = false, } = options;
     const allowedSchemas = schemas?.length ? [...schemas] : [schema];
     const tableCaches = new Map();
     const relationshipCaches = new Map();

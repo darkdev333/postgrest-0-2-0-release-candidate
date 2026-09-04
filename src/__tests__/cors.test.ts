@@ -881,11 +881,14 @@ describe('CORS Support (postgres-e5pc.1)', () => {
       const router = createPostgRESTRouter(mockSql, {
         cors: true,
         corsOrigins: 'https://app.example.com',
+        // Force an application validation error. Hyphens are valid in quoted
+        // PostgreSQL identifiers and must not be rejected by the default.
+        validateTable: (name) => !name.includes('-'),
       })
       const app = new Hono()
       app.route('/api', router)
 
-      // Invalid table name should return 400 with CORS headers
+      // Validation errors should still receive CORS headers.
       const res = await app.request('/api/invalid-table-name', {
         headers: { Origin: 'https://app.example.com' },
       })

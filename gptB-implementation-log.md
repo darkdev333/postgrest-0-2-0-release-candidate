@@ -308,3 +308,7 @@ Reconciled the user-provided renamed `postgrest-0.2.0` scope with the preserved 
 Public-repo hygiene was also completed: MIT LICENSE, provenance NOTICE, corrected repository/version/author metadata, `.gitignore`, npm publication guard, and README licensing/provenance language. The old compatibility test was changed to exercise `public-router.ts`, where singular response media normalization is intentionally owned by the staged migration architecture. `tsconfig.json` now excludes `src/__tests__` from production `dist`.
 
 Final gate: 31/31 Vitest files, 312/312 tests, production no-emit typecheck, clean production build, and npm pack dry-run all pass.
+
+## 2026-09-04 — `@dotdo/postgres-shared` dependency removal
+
+Audited all active uses of the inherited package before the browser smoke-test phase. CSP helpers were peripheral public exports, API-key comparison was a tiny Web-platform utility, and the identifier validator was stricter than PostgREST's schema-cache/quoted-SQL model. The dependency was removed. CSP helpers are retained locally with provenance in NOTICE, constant-time comparison is local, and default resource validation now permits names requiring quoted PostgreSQL identifiers while rejecting empty/whitespace/NUL names. Added focused validation coverage and retained the configurable `validateTable`/`validateFunction` hooks for applications that want stricter policies.

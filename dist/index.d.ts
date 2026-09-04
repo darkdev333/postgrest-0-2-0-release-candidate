@@ -32,6 +32,6 @@ export { buildInsertStatement, applyInsertPreferenceHeaders } from './insert.js'
 export type { InsertCompileOptions, BuiltInsert } from './insert.js';
 export { hasTransactionCapability, withOptionalTransaction } from './executor.js';
 export type { SQLResult } from './executor.js';
-export { csp, securityHeaders, API_CSP_DEFAULTS, STRICT_WEB_CSP, DEVELOPMENT_CSP, CSP_PRESETS, buildCSPHeader, generateSecureNonce, getDefaultDirectives } from '@dotdo/postgres-shared/csp';
-export type { CSPDirectives, CSPEnvironment, CSPOptions, SecurityHeadersOptions, SecurityMiddlewareOptions } from '@dotdo/postgres-shared/csp';
+export { csp, securityHeaders, API_CSP_DEFAULTS, STRICT_WEB_CSP, DEVELOPMENT_CSP, CSP_PRESETS, buildCSPHeader, generateSecureNonce, getDefaultDirectives } from './security.js';
+export type { CSPDirectives, CSPEnvironment, CSPOptions, SecurityHeadersOptions, SecurityMiddlewareOptions } from './security.js';
 //# sourceMappingURL=index.d.ts.map

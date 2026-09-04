@@ -4,7 +4,6 @@
  * Parses PostgREST-style query parameters into structured objects
  * for SQL query building.
  */
-import { POSTGRES_IDENTIFIER_PATTERN, MAX_IDENTIFIER_LENGTH, } from '@dotdo/postgres-shared/validation';
 // --- Constants ---
 /** Query parameter names reserved for non-filter use */
 const RESERVED_PARAMS = ['select', 'order', 'limit', 'offset'];
@@ -48,19 +47,6 @@ const LOGICAL_FILTER_PATTERN = /^\((.+)\)$/;
 const INTEGER_PATTERN = /^-?\d+$/;
 /** Regex for float values */
 const FLOAT_PATTERN = /^-?\d+\.\d+$/;
-/** SQL injection patterns to validate against */
-const SQL_INJECTION_PATTERNS = [
-    /;/,
-    /--/,
-    /\/\*/,
-    /\*\//,
-    /\bunion\b/i,
-    /'/,
-    /"/,
-    /\x00/,
-    /\n/,
-    /\r/, // Carriage returns
-];
 // --- Helper Functions ---
 /**
  * Parse an embedded resource match result into an EmbeddedResource object.
@@ -514,29 +500,19 @@ export class PostgrestParser {
      *
      * Checks for:
      * - Empty or whitespace-only names
-     * - SQL injection patterns (semicolons, comments, UNION, etc.)
-     * - Valid PostgreSQL identifier format
-     * - Maximum identifier length
-     * - Presence in the allowlist
+     * - Empty or NUL-containing names
+     * - Presence in the schema-derived allowlist
+     *
+     * Resource names are not limited to PostgreSQL's unquoted identifier grammar.
+     * SQL generation is responsible for identifier quoting.
      *
      * @param tableName - The table name to validate
      * @param allowlist - Array of permitted table names
      * @throws Error if the table name is invalid or not in the allowlist
      */
     validateTableName(tableName, allowlist) {
-        if (!tableName || tableName.trim() === '') {
-            throw new Error('Invalid table name: empty or whitespace');
-        }
-        for (const pattern of SQL_INJECTION_PATTERNS) {
-            if (pattern.test(tableName)) {
-                throw new Error('Invalid table name: contains SQL injection pattern');
-            }
-        }
-        if (!POSTGRES_IDENTIFIER_PATTERN.test(tableName)) {
-            throw new Error('Invalid table name: invalid PostgreSQL identifier');
-        }
-        if (tableName.length > MAX_IDENTIFIER_LENGTH) {
-            throw new Error(`Invalid table name: exceeds maximum length of ${MAX_IDENTIFIER_LENGTH} characters`);
+        if (!tableName || tableName.trim() === '' || tableName.includes('\0')) {
+            throw new Error('Invalid table name: empty, whitespace, or NUL-containing');
         }
         if (!allowlist.includes(tableName)) {
             throw new Error(`Table '${tableName}' not found in allowlist`);
