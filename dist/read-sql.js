@@ -10,7 +10,7 @@ function quoteIdent(value) { return `"${value.replace(/"/g, '""')}"`; }
 function quoteLiteral(value) { return `'${value.replace(/'/g, "''")}'`; }
 function qualifiedTable(schema, table) { return schema ? `${quoteIdent(schema)}.${quoteIdent(table)}` : quoteIdent(table); }
 function nextAlias(state, prefix) { const alias = `pgrst_${prefix}_${state.nextAlias}`; state.nextAlias += 1; return alias; }
-function addParam(state, value) { state.params.push(value); return `$${state.nextParam++}`; }
+function addParam(state, value) { state.params.push(value); return '$' + state.nextParam++; }
 function joinPredicates(embed, parentAlias, childAlias, junctionAlias) {
     const rel = embed.relationship;
     if (rel.cardinality === 'many-to-many') {

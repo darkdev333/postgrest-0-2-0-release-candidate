@@ -16,7 +16,7 @@ function quoteIdent(value: string): string { return `"${value.replace(/"/g, '""'
 function quoteLiteral(value: string): string { return `'${value.replace(/'/g, "''")}'` }
 function qualifiedTable(schema: string | undefined, table: string): string { return schema ? `${quoteIdent(schema)}.${quoteIdent(table)}` : quoteIdent(table) }
 function nextAlias(state: CompileState, prefix: string): string { const alias = `pgrst_${prefix}_${state.nextAlias}`; state.nextAlias += 1; return alias }
-function addParam(state: CompileState, value: unknown): string { state.params.push(value); return `$${state.nextParam++}` }
+function addParam(state: CompileState, value: unknown): string { state.params.push(value); return '$' + state.nextParam++ }
 function joinPredicates(embed: PlannedEmbed, parentAlias: string, childAlias: string, junctionAlias?: string): string[] {
   const rel = embed.relationship
   if (rel.cardinality === 'many-to-many') {

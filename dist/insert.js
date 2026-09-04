@@ -18,7 +18,7 @@ export function buildInsertStatement(table, data, options = {}) {
     const params = [];
     const addParam = (value) => {
         params.push(value);
-        return `$${params.length}`;
+        return '$' + params.length;
     };
     const values = rows.map(row => {
         const fields = columns.map(column => {

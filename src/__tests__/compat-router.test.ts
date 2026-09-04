@@ -36,7 +36,7 @@ describe('compatibility router embedded migration path', () => {
     expect(await res.json()).toEqual([{ id: 1, clients: { id: 2, name: 'Acme' } }])
     const read = sql.calls.find(call => call.sql.includes('row_to_json') && !call.sql.includes('COUNT(*)'))
     expect(read?.sql).toContain('row_to_json')
-    expect(read?.sql).toContain('"name" ILIKE')
+    expect(read?.sql).toContain('"name" ILIKE $1')
     expect(read?.params).toContain('A%')
     expect(res.headers.get('content-range')).toBe('0-0/1')
   })

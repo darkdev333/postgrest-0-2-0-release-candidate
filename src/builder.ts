@@ -523,7 +523,7 @@ export class QueryBuilder {
    */
   private addParam(value: unknown): string {
     this.params.push(value);
-    return `$${this.paramIndex++}`;
+    return '$' + this.paramIndex++;
   }
 
   /**
