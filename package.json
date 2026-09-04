@@ -58,11 +58,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/darkdev333/postgrest-0.2.0.git"
+    "url": "git+https://github.com/darkdev333/postgrest-0-2-0-release-candidate.git"
   },
-  "homepage": "https://github.com/darkdev333/postgrest-0.2.0#readme",
+  "homepage": "https://github.com/darkdev333/postgrest-0-2-0-release-candidate#readme",
   "bugs": {
-    "url": "https://github.com/darkdev333/postgrest-0.2.0/issues"
+    "url": "https://github.com/darkdev333/postgrest-0-2-0-release-candidate/issues"
   },
   "private": true
 }
