@@ -1,0 +1,68 @@
+{
+  "name": "postgrest-compat",
+  "version": "0.2.0",
+  "description": "Browser- and Worker-friendly TypeScript compatibility adapter for the PostgREST HTTP API",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dotdo/postgres-shared": "0.1.1",
+    "hono": "4.11.4"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "1.0.0",
+    "typescript": "5.0.2",
+    "vitest": "1.0.0"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0"
+  },
+  "keywords": [
+    "postgrest",
+    "supabase",
+    "rest",
+    "postgres",
+    "postgresql",
+    "pglite",
+    "hono",
+    "browser",
+    "service-worker",
+    "worker"
+  ],
+  "author": "postgrest-0.2.0 contributors",
+  "contributors": [
+    "SCI-ENCE <https://sci-ence.com>"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/darkdev333/postgrest-0.2.0.git"
+  },
+  "homepage": "https://github.com/darkdev333/postgrest-0.2.0#readme",
+  "bugs": {
+    "url": "https://github.com/darkdev333/postgrest-0.2.0/issues"
+  },
+  "private": true
+}
