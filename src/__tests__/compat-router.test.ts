@@ -47,7 +47,7 @@ describe('compatibility router embedded migration path', () => {
     const res = await app.request('/tickets?select=client_id,...clients(*)')
     expect(res.status).toBe(200)
 
-    const read = sql.calls.find(call => call.sql.includes('LEFT JOIN LATERAL') && !call.sql.includes('information_schema'))
+    const read = sql.calls.find(call => call.sql.startsWith('SELECT "pgrst_r_0"."client_id"'))
     expect(read?.sql).toMatch(/SELECT "pgrst_r_0"\."client_id", "pgrst_e_\d+"\."id" AS "id", "pgrst_e_\d+"\."name" AS "name"/)
     expect(read?.sql).not.toContain('row_to_json')
   })

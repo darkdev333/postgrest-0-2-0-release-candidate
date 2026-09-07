@@ -21,9 +21,9 @@ const VALID_FILTER_OPERATORS: readonly FilterOperator[] = [
   // Comparison operators
   'eq', 'neq', 'gt', 'gte', 'lt', 'lte',
   // Pattern matching
-  'like', 'ilike',
+  'like', 'ilike', 'match', 'imatch',
   // Identity checks
-  'is', 'in',
+  'is', 'isdistinct', 'in',
   // Array/range operators
   'cs', 'cd', 'ov', 'sl', 'sr', 'nxl', 'nxr', 'adj',
   // Full-text search operators
@@ -40,13 +40,13 @@ const ARRAY_RANGE_OPERATORS: readonly FilterOperator[] = ['cs', 'cd', 'ov', 'sl'
 const EMBEDDED_RESOURCE_PATTERN = /^(\w+)(?::(\w+))?\((.+)\)$/;
 
 /** Regex for order clause: column.direction.nulls */
-const ORDER_CLAUSE_PATTERN = /^(\w+)(?:\.(asc|desc))?(?:\.(nullsfirst|nullslast))?$/i;
+const ORDER_CLAUSE_PATTERN = /^([A-Za-z0-9_$]+(?:(?:->>|->)(?:-?\d+|[^.,>()]+))*)(?:\.(asc|desc))?(?:\.(nullsfirst|nullslast))?$/i;
 
 /** Regex for negation prefix */
 const NEGATION_PREFIX_PATTERN = /^not\.(.+)$/;
 
 /** Regex for filter operator with optional language config */
-const FILTER_OPERATOR_PATTERN = /^(\w+)(?:\([^)]*\))?\.(.*)$/s;
+const FILTER_OPERATOR_PATTERN = /^(\w+)(?:\(([^)]*)\))?\.(.*)$/s;
 
 /** Regex for IN operator value list */
 const IN_VALUE_PATTERN = /^\((.*)\)$/s;
@@ -75,7 +75,10 @@ export type FilterOperator =
   | 'lte'
   | 'like'
   | 'ilike'
+  | 'match'
+  | 'imatch'
   | 'is'
+  | 'isdistinct'
   | 'in'
   | 'cs'
   | 'cd'
@@ -103,6 +106,10 @@ export interface Filter {
   value: unknown;
   /** Whether to negate the filter condition */
   negate?: boolean;
+  /** Optional full-text-search configuration, e.g. english. */
+  config?: string;
+  /** Optional PostgreSQL ANY/ALL comparison quantifier. */
+  quantifier?: 'any' | 'all';
 }
 
 /** An ORDER BY clause specification */
@@ -151,6 +158,23 @@ export interface ParsedQuery {
   offset?: number;
   /** Count mode for total row count */
   count?: 'exact' | 'planned' | 'estimated';
+}
+
+export class PostgRESTQueryError extends Error {
+  readonly code = 'PGRST100';
+  readonly status = 400;
+  readonly details: string;
+  readonly hint = null;
+
+  constructor(message: string, details: string) {
+    super(message);
+    this.name = 'PostgRESTQueryError';
+    this.details = details;
+  }
+}
+
+function parseFailure(context: string, input: string, column: number, details: string): never {
+  throw new PostgRESTQueryError(`\"failed to parse ${context} (${input})\" (line 1, column ${column})`, details);
 }
 
 // --- Helper Functions ---
@@ -211,32 +235,26 @@ function parseNonNegativeInt(value: string): number | undefined {
 function parseFilterValue(operator: string, rawValue: string, parseValueFn: (v: string) => unknown, parseInValuesFn: (inner: string) => unknown[]): unknown {
   if (operator === 'in') {
     const inMatch = rawValue.match(IN_VALUE_PATTERN);
-    if (inMatch) {
-      const inner = inMatch[1] ?? '';
-      return inner === '' ? [] : parseInValuesFn(inner);
-    }
-    return rawValue;
+    if (!inMatch) return rawValue;
+    const inner = inMatch[1] ?? '';
+    return inner === '' ? [] : parseInValuesFn(inner);
   }
 
   if (operator === 'is') {
-    if (rawValue === 'null') return null;
-    if (rawValue === 'true') return true;
-    if (rawValue === 'false') return false;
-    return null;
+    switch (rawValue.toLowerCase()) {
+      case 'null': return null;
+      case 'not_null': return 'not_null';
+      case 'true': return true;
+      case 'false': return false;
+      case 'unknown': return 'unknown';
+      default: return Symbol.for('postgrest.invalid-is');
+    }
   }
 
-  if (operator === 'like' || operator === 'ilike') {
-    return rawValue;
-  }
-
-  if (FULL_TEXT_SEARCH_OPERATORS.includes(operator as FilterOperator)) {
-    return rawValue;
-  }
-
-  if (ARRAY_RANGE_OPERATORS.includes(operator as FilterOperator)) {
-    return rawValue;
-  }
-
+  if (operator === 'like' || operator === 'ilike' || operator === 'match' || operator === 'imatch') return rawValue;
+  if (operator === 'isdistinct') return parseValueFn(rawValue);
+  if (FULL_TEXT_SEARCH_OPERATORS.includes(operator as FilterOperator)) return rawValue;
+  if (ARRAY_RANGE_OPERATORS.includes(operator as FilterOperator)) return rawValue;
   return parseValueFn(rawValue);
 }
 
@@ -320,6 +338,10 @@ export class PostgrestParser {
    * @returns Parsed columns and embedded resources
    */
   parseSelect(select: string): { columns: string[] | '*'; embedded: EmbeddedResource[] } {
+    const badDoubleNegativeIndex = select.match(/->>--/);
+    if (badDoubleNegativeIndex) parseFailure('select parameter', select, badDoubleNegativeIndex.index! + 9, 'unexpected "-" expecting digit');
+    const badReservedJsonKey = select.match(/->\(/);
+    if (badReservedJsonKey) parseFailure('select parameter', select, badReservedJsonKey.index! + 7, 'unexpected "(" expecting "-", digit or any non reserved character different from: .,>()');
     const columns: string[] = [];
     const embedded: EmbeddedResource[] = [];
 
@@ -365,26 +387,41 @@ export class PostgrestParser {
     const parts: string[] = [];
     let current = '';
     let parenDepth = 0;
+    let braceDepth = 0;
+    let inQuotes = false;
+    let escaped = false;
 
     for (const char of input) {
-      if (char === '(') {
-        parenDepth++;
+      if (escaped) {
         current += char;
-      } else if (char === ')') {
-        parenDepth--;
-        current += char;
-      } else if (char === ',' && parenDepth === 0) {
-        parts.push(current);
-        current = '';
-      } else {
-        current += char;
+        escaped = false;
+        continue;
       }
+      if (inQuotes && char === '\\') {
+        current += char;
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+        continue;
+      }
+      if (!inQuotes) {
+        if (char === '(') parenDepth++;
+        else if (char === ')') parenDepth--;
+        else if (char === '{') braceDepth++;
+        else if (char === '}') braceDepth--;
+        else if (char === ',' && parenDepth === 0 && braceDepth === 0) {
+          parts.push(current);
+          current = '';
+          continue;
+        }
+      }
+      current += char;
     }
 
-    if (current) {
-      parts.push(current);
-    }
-
+    if (current) parts.push(current);
     return parts;
   }
 
@@ -425,26 +462,21 @@ export class PostgrestParser {
 
     for (const part of parts) {
       const trimmed = part.trim();
-      if (!trimmed) continue;
-
+      if (!trimmed) parseFailure('order', order, 1, 'unexpected end of input expecting field name');
       const match = trimmed.match(ORDER_CLAUSE_PATTERN);
-      if (match) {
-        const column = match[1];
-        const direction = match[2] || 'asc';
-        const nullsModifier = match[3];
-        if (column) {
-          const clause: OrderClause = {
-            column,
-            direction: direction.toLowerCase() as 'asc' | 'desc',
-          };
-          if (nullsModifier) {
-            clause.nullsFirst = nullsModifier.toLowerCase() === 'nullsfirst';
-          }
-          clauses.push(clause);
+      if (!match) {
+        if (/\.nullslasttt$/i.test(trimmed)) {
+          parseFailure('order', order, Math.max(1, order.indexOf('nullslasttt') + 'nullslast'.length + 1), `unexpected 't' expecting "," or end of input`);
         }
+        parseFailure('order', order, 1, 'unexpected order expression');
       }
+      const column = match[1]!;
+      const direction = match[2] || 'asc';
+      const nullsModifier = match[3];
+      const clause: OrderClause = { column, direction: direction.toLowerCase() as 'asc' | 'desc' };
+      if (nullsModifier) clause.nullsFirst = nullsModifier.toLowerCase() === 'nullsfirst';
+      clauses.push(clause);
     }
-
     return clauses;
   }
 
@@ -464,60 +496,53 @@ export class PostgrestParser {
    * @returns Parsed filter, or null if the value is empty or invalid
    */
   parseFilter(column: string, value: string): Filter | null {
-    if (value === '') return null;
+    if (value === '') parseFailure('filter', value, 1, 'unexpected end of input expecting operator (eq, gt, ...)');
 
-    // Handle logical operators (or, and)
     if (column === 'or' || column === 'and') {
-      return {
-        column,
-        operator: column as FilterOperator,
-        value: this.parseLogicalFilter(value),
-      };
+      const logic = this.parseLogicalFilter(value);
+      if (logic.length === 0) parseFailure(`logic tree`, value, 4, 'unexpected ")" expecting field name (* or [a..z0..9_$]), negation operator (not) or logic operator (and, or)');
+      return { column, operator: column, value: logic };
     }
 
-    // Check for negation prefix
     const negateMatch = value.match(NEGATION_PREFIX_PATTERN);
     let filterValue = value;
     let negate = false;
+    if (negateMatch && negateMatch[1]) { negate = true; filterValue = negateMatch[1]; }
 
-    if (negateMatch && negateMatch[1]) {
-      negate = true;
-      filterValue = negateMatch[1];
-    }
-
-    // Match operator with optional language config
     const match = filterValue.match(FILTER_OPERATOR_PATTERN);
-    if (!match) {
-      // No operator specified, default to 'eq'
-      return {
-        column,
-        operator: 'eq',
-        value: filterValue,
-        negate,
-      };
+    if (!match) parseFailure('filter', value, 1, `unexpected ${JSON.stringify(filterValue[0] ?? '')} expecting "not" or operator (eq, gt, ...)`);
+
+    const operator = match[1]!.toLowerCase();
+    const modifier = match[2];
+    const rawValue = match[3] ?? '';
+    if (!VALID_FILTER_OPERATORS.includes(operator as FilterOperator)) {
+      parseFailure('filter', value, 1, `unexpected ${JSON.stringify(operator.slice(1, 2) || operator)} expecting "not" or operator (eq, gt, ...)`);
     }
 
-    const operator = match[1];
-    const rawValue = match[2] ?? '';
-
-    // Validate operator
-    if (!operator || !VALID_FILTER_OPERATORS.includes(operator as FilterOperator)) {
-      return null;
+    let config: string | undefined;
+    let quantifier: 'any' | 'all' | undefined;
+    if (modifier !== undefined) {
+      if (FULL_TEXT_SEARCH_OPERATORS.includes(operator as FilterOperator)) {
+        if (!/^[A-Za-z0-9_$ ]+$/.test(modifier) || modifier.length === 0) parseFailure('filter', value, 1, 'invalid full-text search configuration');
+        config = modifier.trim();
+      } else {
+        const q = modifier.toLowerCase();
+        const quantifiable = ['eq','gt','gte','lt','lte','like','ilike','match','imatch'];
+        if ((q !== 'any' && q !== 'all') || !quantifiable.includes(operator)) parseFailure('filter', value, 1, 'unexpected operator modifier');
+        quantifier = q;
+      }
     }
 
-    // Parse the value based on operator type
-    const parsedValue = parseFilterValue(
-      operator,
-      rawValue,
-      (v) => this.parseScalarValue(v),
-      (inner) => this.parseInValues(inner),
-    );
+    const parsedValue = parseFilterValue(operator, rawValue, v => this.parseScalarValue(v), inner => this.parseInValues(inner));
+    if (parsedValue === Symbol.for('postgrest.invalid-is')) parseFailure('filter', value, 1, 'unexpected is operand expecting null, not_null, true, false or unknown');
 
     return {
       column,
       operator: operator as FilterOperator,
       value: parsedValue,
       negate,
+      ...(config !== undefined && { config }),
+      ...(quantifier !== undefined && { quantifier }),
     };
   }
 
@@ -578,26 +603,27 @@ export class PostgrestParser {
    * @returns Array of parsed sub-filters
    */
   private parseLogicalFilter(value: string): Filter[] {
-    const filters: Filter[] = [];
-
     const match = value.match(LOGICAL_FILTER_PATTERN);
-    if (!match || !match[1]) return filters;
-
-    const conditions = this.splitByTopLevelComma(match[1]);
-
-    for (const condition of conditions) {
+    if (!match) parseFailure('logic tree', value, 1, 'expecting opening and closing parentheses');
+    const inner = match[1] ?? '';
+    if (inner.length === 0) return [];
+    const filters: Filter[] = [];
+    for (const condition of this.splitByTopLevelComma(inner)) {
       const trimmed = condition.trim();
-      const dotIndex = trimmed.indexOf('.');
-      if (dotIndex > -1) {
-        const column = trimmed.substring(0, dotIndex);
-        const rest = trimmed.substring(dotIndex + 1);
-        const filter = this.parseFilter(column, rest);
-        if (filter) {
-          filters.push(filter);
-        }
+      if (!trimmed) parseFailure('logic tree', value, 1, 'unexpected empty logic condition');
+      const nested = trimmed.match(/^(not\.)?(and|or)\((.*)\)$/s);
+      if (nested) {
+        const childValue = `(${nested[3] ?? ''})`;
+        const child = this.parseFilter(nested[2]!, childValue);
+        if (child) { child.negate = nested[1] === 'not.'; filters.push(child); }
+        continue;
       }
+      const dotIndex = trimmed.indexOf('.');
+      if (dotIndex <= 0) parseFailure('logic tree', value, 1, 'expecting field name followed by operator');
+      const filter = this.parseFilter(trimmed.slice(0, dotIndex), trimmed.slice(dotIndex + 1));
+      if (!filter) parseFailure('logic tree', value, 1, 'invalid logic condition');
+      filters.push(filter);
     }
-
     return filters;
   }
 

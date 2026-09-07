@@ -64,6 +64,30 @@ describe('PostgREST relationship graph', () => {
     expect(isToOneRelationship(toTickets)).toBe(false)
   })
 
+  it('preserves upstream recursive many-to-many relationships in the graph', () => {
+    const posters = table('posters', ['id'], [], columns([['id', { isPrimaryKey: true }]]))
+    const subscriptions = table('subscriptions', ['subscriber', 'subscribed'], [
+      { name: 'subscriptions_subscriber_fkey', column: 'subscriber', referencedTable: 'posters', referencedColumn: 'id' },
+      { name: 'subscriptions_subscribed_fkey', column: 'subscribed', referencedTable: 'posters', referencedColumn: 'id' },
+    ], columns([
+      ['subscriber', { isPrimaryKey: true }],
+      ['subscribed', { isPrimaryKey: true }],
+    ]))
+
+    const relationships = buildRelationships(new Map([['posters', posters], ['subscriptions', subscriptions]]))
+    const recursive = relationships.filter(relationship =>
+      relationship.cardinality === 'many-to-many'
+      && relationship.sourceTable === 'posters'
+      && relationship.targetTable === 'posters'
+    )
+
+    expect(recursive).toHaveLength(2)
+    expect(recursive.every(relationship => relationship.self)).toBe(true)
+    expect(new Set(recursive.map(relationship => relationship.junction?.sourceConstraint))).toEqual(new Set([
+      'subscriptions_subscriber_fkey', 'subscriptions_subscribed_fkey',
+    ]))
+  })
+
   it('discovers a conservative many-to-many relationship through a junction primary key', () => {
     const users = table('users', ['id'], [], columns([['id', { isPrimaryKey: true }]]))
     const teams = table('teams', ['id'], [], columns([['id', { isPrimaryKey: true }]]))

@@ -17,8 +17,10 @@ export function postgresStatus(code) { switch (code) {
 function inferCode(message) { for (const [pattern, code] of MESSAGE_CODE_FALLBACKS)
     if (pattern.test(message))
         return code; return undefined; }
-export function normalizePostgRESTError(error) { const err = error instanceof Error ? error : undefined; const message = err?.message ?? String(error ?? 'Internal server error'); const code = typeof err?.code === 'string' && err.code.length ? err.code : inferCode(message); if (code)
-    return { status: postgresStatus(code), body: { code, message, details: err?.details ?? err?.detail ?? null, hint: err?.hint ?? null } }; return { status: 500, body: { code: 'PGRST500', message, details: null, hint: null } }; }
+export function normalizePostgRESTError(error) { const err = error instanceof Error ? error : undefined; const message = err?.message ?? String(error ?? 'Internal server error'); const code = typeof err?.code === 'string' && err.code.length ? err.code : inferCode(message); if (code) {
+    const status = code === 'PGRST100' ? 400 : postgresStatus(code);
+    return { status, body: { code, message, details: err?.details ?? err?.detail ?? null, hint: err?.hint ?? null } };
+} return { status: 500, body: { code: 'PGRST500', message, details: null, hint: null } }; }
 export function singularCardinalityError(rowCount) { return { code: 'PGRST116', details: `The result contains ${rowCount} rows`, hint: null, message: 'Cannot coerce the result to a single JSON object' }; }
 export function requestedRangeNotSatisfiable(details) { return { code: 'PGRST103', details, hint: null, message: 'Requested range not satisfiable' }; }
 export function invalidPreferences(tokens) { return { code: 'PGRST122', details: `Invalid preferences: ${tokens.join(', ')}`, hint: null, message: 'Invalid preferences given with handling=strict' }; }
@@ -29,8 +31,31 @@ export function ambiguousRpc(signatures) { return { code: 'PGRST203', details: n
 export function notEmbedded(resource, hint, details = null) { return { code: 'PGRST108', details, hint: hint ?? `Verify that '${resource}' is included in the 'select' query parameter.`, message: `'${resource}' is not an embedded resource in this request` }; }
 export function relatedOrderNotToOne(parent, resource) { return { code: 'PGRST118', details: `'${parent}' and '${resource}' do not form a many-to-one or one-to-one relationship`, hint: null, message: `A related order on '${resource}' is not possible` }; }
 export function noRelationship(schema, parent, child, hint = null) { return { code: 'PGRST200', details: `Searched for a foreign key relationship between '${parent}' and '${child}' in the schema '${schema}', but no matches were found.`, hint, message: `Could not find a relationship between '${parent}' and '${child}' in the schema cache` }; }
-function relationshipDescription(rel) { const cardinality = rel.cardinality; const embedding = `${rel.sourceTable} with ${rel.targetTable}`; if (rel.cardinality === 'many-to-many' && rel.junction) {
-    return { cardinality, embedding, relationship: `${rel.constraintName} using ${rel.junction.table}` };
-} const source = rel.columnPairs.map(pair => pair.source).join(', '), target = rel.columnPairs.map(pair => pair.target).join(', '); return { cardinality, embedding, relationship: `${rel.constraintName} using ${rel.sourceTable}(${source}) and ${rel.targetTable}(${target})` }; }
-export function ambiguousRelationship(parent, child, candidates) { const hints = [...new Set(candidates.map(rel => `${child}!${rel.constraintName.split(':')[0]}`))]; return { code: 'PGRST201', details: candidates.map(relationshipDescription), hint: `Try changing '${child}' to one of the following: ${hints.map(item => `'${item}'`).join(', ')}. Find the desired relationship in the 'details' key.`, message: `Could not embed because more than one relationship was found for '${parent}' and '${child}'` }; }
+function relationshipDescription(rel) {
+    const cardinality = rel.cardinality;
+    const embedding = `${rel.sourceTable} with ${rel.targetTable}`;
+    if (rel.cardinality === 'many-to-many' && rel.junction) {
+        const sourceJunctionColumns = rel.junction.sourceColumns.map(pair => pair.target).join(', ');
+        const targetJunctionColumns = rel.junction.targetColumns.map(pair => pair.source).join(', ');
+        return {
+            cardinality,
+            embedding,
+            relationship: `${rel.junction.table} using ${rel.junction.sourceConstraint}(${sourceJunctionColumns}) and ${rel.junction.targetConstraint}(${targetJunctionColumns})`,
+        };
+    }
+    const source = rel.columnPairs.map(pair => pair.source).join(', ');
+    const target = rel.columnPairs.map(pair => pair.target).join(', ');
+    return { cardinality, embedding, relationship: `${rel.constraintName} using ${rel.sourceTable}(${source}) and ${rel.targetTable}(${target})` };
+}
+function relationshipHint(child, rel) {
+    if (rel.cardinality === 'many-to-many' && rel.junction)
+        return `${child}!${rel.junction.table}`;
+    return `${child}!${rel.constraintName}`;
+}
+export function ambiguousRelationship(parent, child, candidates) {
+    const hints = candidates.map(rel => relationshipHint(child, rel));
+    return { code: 'PGRST201', details: candidates.map(relationshipDescription), hint: `Try changing '${child}' to one of the following: ${hints.map(item => `'${item}'`).join(', ')}. Find the desired relationship in the 'details' key.`, message: `Could not embed because more than one relationship was found for '${parent}' and '${child}'` };
+}
+export function aggregatesNotAllowed() { return { code: 'PGRST123', details: null, hint: null, message: 'Use of aggregate functions is not allowed' }; }
+export function toManySpreadAggregatesNotImplemented() { return { code: 'PGRST127', details: 'Aggregates are not implemented for one-to-many or many-to-many spreads.', hint: null, message: 'Feature not implemented' }; }
 //# sourceMappingURL=errors.js.map

@@ -23,4 +23,6 @@ export declare function notEmbedded(resource: string, hint?: string, details?: u
 export declare function relatedOrderNotToOne(parent: string, resource: string): PostgRESTErrorBody;
 export declare function noRelationship(schema: string, parent: string, child: string, hint?: unknown): PostgRESTErrorBody;
 export declare function ambiguousRelationship(parent: string, child: string, candidates: RelationshipInfo[]): PostgRESTErrorBody;
+export declare function aggregatesNotAllowed(): PostgRESTErrorBody;
+export declare function toManySpreadAggregatesNotImplemented(): PostgRESTErrorBody;
 //# sourceMappingURL=errors.d.ts.map

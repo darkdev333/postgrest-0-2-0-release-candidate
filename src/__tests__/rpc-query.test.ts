@@ -15,6 +15,22 @@ describe('single-execution RPC result query',()=>{
     expect(built.params).toEqual(['abc',10]);
   });
 
+  it('applies JSON-path filters and ordering to RPC result rows',()=>{
+    const query=new PostgrestParser().parse(new URLSearchParams('data->foo->>bar=eq.baz&order=data->items->>0.desc'));
+    const built=buildRpcEnvelopeQuery('search_items',{},query,{schema:'api'});
+    expect(built.sql).toContain(`"data"->'foo'->>'bar' = $1`);
+    expect(built.sql).toContain(`ORDER BY "data"->'items'->>0 DESC`);
+    expect(built.params).toEqual(['baz']);
+  });
+
+  it('projects RPC JSON paths, casts, and aliases with PostgREST output names',()=>{
+    const query=new PostgrestParser().parse(new URLSearchParams('select=settings->foo->>bar,myInt:settings->foo->>int::integer,data->>0::int'));
+    const built=buildRpcEnvelopeQuery('search_items',{},query,{schema:'api'});
+    expect(built.sql).toContain(`"settings"->'foo'->>'bar' AS "bar"`);
+    expect(built.sql).toContain(`CAST("settings"->'foo'->>'int' AS integer) AS "myInt"`);
+    expect(built.sql).toContain(`CAST("data"->>0 AS int) AS "data"`);
+  });
+
   it('partitions GET function args from result modifiers and filters',()=>{
     const routine:RoutineInfo={oid:'1',name:'search_items',schema:'api',returnsSet:true,returnsVoid:false,resultType:'SETOF api.items',argNames:['term','limit_hint'],argTypes:['text','integer'],requiredArgNames:['term'],hasUnnamedArgs:false};
     const partition=partitionGetRpcParams(new URLSearchParams('term=abc&select=id,name&id=eq.4&order=id.desc&limit_hint=9'),routine);
