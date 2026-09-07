@@ -32,6 +32,27 @@ describe('PostgREST select/read planning', () => {
     ])
   })
 
+
+  it('parses casts and aggregate projections into the read AST', () => {
+    expect(parsePostgRESTSelect('id::text,total:amount.sum()::numeric,count()')).toEqual([
+      { kind: 'field', name: 'id', cast: 'text' },
+      { kind: 'field', alias: 'total', name: 'amount', aggregate: 'sum', aggregateCast: 'numeric' },
+      { kind: 'field', name: '*', aggregate: 'count' },
+    ])
+  })
+
+  it('preserves a pre-aggregate cast separately from an aggregate result cast', () => {
+    expect(parsePostgRESTSelect('total:amount::numeric.sum()::text')).toEqual([
+      { kind: 'field', alias: 'total', name: 'amount', cast: 'numeric', aggregate: 'sum', aggregateCast: 'text' },
+    ])
+  })
+
+  it('keeps JSON-path field expressions intact while applying a trailing cast', () => {
+    expect(parsePostgRESTSelect('status:data->>status::text')).toEqual([
+      { kind: 'field', alias: 'status', name: 'data->>status', cast: 'text' },
+    ])
+  })
+
   it('preserves nested embeds as a tree', () => {
     const parsed = parsePostgRESTSelect('*,clients(id,contacts(email))')
     const clients = parsed[1]

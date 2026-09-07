@@ -6,8 +6,8 @@ export interface BuiltReadSQL { sql: string; params: unknown[] }
 interface CompileState { nextAlias: number; nextParam: number; params: unknown[]; schema?: string }
 
 const OPERATORS: Partial<Record<FilterOperator, string>> = {
-  eq: '=', neq: '!=', gt: '>', gte: '>=', lt: '<', lte: '<=', like: 'LIKE', ilike: 'ILIKE',
-  cs: '@>', cd: '<@', ov: '&&', sl: '<<', sr: '>>', nxl: '&<', nxr: '&>', adj: '-|-',
+  eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=', like: 'LIKE', ilike: 'ILIKE', match: '~', imatch: '~*', isdistinct: 'IS DISTINCT FROM',
+  cs: '@>', cd: '<@', ov: '&&', sl: '<<', sr: '>>', nxl: '&>', nxr: '&<', adj: '-|-',
 }
 const FTS: Partial<Record<FilterOperator, string>> = {
   fts: 'to_tsquery', plfts: 'plainto_tsquery', phfts: 'phraseto_tsquery', wfts: 'websearch_to_tsquery',
@@ -15,6 +15,7 @@ const FTS: Partial<Record<FilterOperator, string>> = {
 function quoteIdent(value: string): string { return `"${value.replace(/"/g, '""')}"` }
 function quoteLiteral(value: string): string { return `'${value.replace(/'/g, "''")}'` }
 function qualifiedTable(schema: string | undefined, table: string): string { return schema ? `${quoteIdent(schema)}.${quoteIdent(table)}` : quoteIdent(table) }
+function applyCast(expression: string, cast: string | undefined): string { return cast ? `CAST( ${expression} AS ${cast} )` : expression }
 function nextAlias(state: CompileState, prefix: string): string { const alias = `pgrst_${prefix}_${state.nextAlias}`; state.nextAlias += 1; return alias }
 function addParam(state: CompileState, value: unknown): string { state.params.push(value); return '$' + state.nextParam++ }
 function joinPredicates(embed: PlannedEmbed, parentAlias: string, childAlias: string, junctionAlias?: string): string[] {
@@ -25,23 +26,36 @@ function joinPredicates(embed: PlannedEmbed, parentAlias: string, childAlias: st
   }
   return rel.columnPairs.map(pair => `${quoteIdent(parentAlias)}.${quoteIdent(pair.source)} = ${quoteIdent(childAlias)}.${quoteIdent(pair.target)}`)
 }
+function compileSelectField(field: ReadPlan['fields'][number], tableAlias: string): string {
+  let expression = field.name === '*'
+    ? `${quoteIdent(tableAlias)}.*`
+    : compileFieldExpression(tableAlias, field.name)
+  expression = applyCast(expression, field.cast)
+  if (field.aggregate) {
+    const aggregateInput = field.name === '*' && field.aggregate === 'count' ? '*' : expression
+    expression = `${field.aggregate}(${aggregateInput})`
+    expression = applyCast(expression, field.aggregateCast)
+  }
+  const outputName = field.alias ?? field.aggregate
+  return outputName ? `${expression} AS ${quoteIdent(outputName)}` : expression
+}
 function compileFields(plan: ReadPlan, tableAlias: string): string[] {
   if (plan.fields.length === 0) return [`${quoteIdent(tableAlias)}.*`]
-  const fields: string[] = []
-  for (const field of plan.fields) {
-    if (field.name === '*') { fields.push(`${quoteIdent(tableAlias)}.*`); continue }
-    const base = `${quoteIdent(tableAlias)}.${quoteIdent(field.name)}`
-    fields.push(field.alias ? `${base} AS ${quoteIdent(field.alias)}` : base)
-  }
-  return fields
+  return plan.fields.map(field => compileSelectField(field, tableAlias))
 }
-interface ProjectedColumn { sourceName: string; outputName: string }
+interface ProjectedColumn {
+  sourceName: string
+  outputName: string
+  aggregate?: ReadPlan['fields'][number]['aggregate']
+  aggregateCast?: string
+}
 function projectedColumns(plan: ReadPlan): ProjectedColumn[] {
   const columns: ProjectedColumn[] = []
   for (const field of plan.fields) {
-    if (field.name === '*') throw new Error('Spread embeds with * require schema-backed field expansion')
-    const outputName = field.alias ?? field.name
-    columns.push({ sourceName: outputName, outputName })
+    if (field.name === '*' && !field.aggregate) throw new Error('Spread embeds with * require schema-backed field expansion')
+    const sourceName = field.alias ?? field.name
+    const outputName = field.alias ?? field.aggregate ?? field.name
+    columns.push({ sourceName, outputName, ...(field.aggregate && { aggregate: field.aggregate }), ...(field.aggregateCast && { aggregateCast: field.aggregateCast }) })
   }
   for (const embed of plan.embeds) {
     if (embed.spread) columns.push(...projectedColumns(embed.plan))
@@ -49,8 +63,48 @@ function projectedColumns(plan: ReadPlan): ProjectedColumn[] {
   }
   return columns
 }
+function hasLocalProjectionAggregate(plan: ReadPlan): boolean {
+  if (plan.fields.some(field => field.aggregate)) return true
+  return plan.embeds.some(embed => embed.spread && isToOneRelationship(embed.relationship) && projectedColumns(embed.plan).some(column => column.aggregate))
+}
+function compileGroupBy(plan: ReadPlan, tableAlias: string): string {
+  if (!hasLocalProjectionAggregate(plan)) return ''
+  const grouping = plan.fields
+    .filter(field => !field.aggregate && field.name !== '*')
+    .map(field => {
+      let expression = compileFieldExpression(tableAlias, field.name)
+      expression = applyCast(expression, field.cast)
+      return expression
+    })
+  for (const embed of plan.embeds) {
+    if (embed.spread) {
+      grouping.push(...projectedColumns(embed.plan).filter(column => !column.aggregate).map(column => quoteIdent(column.outputName)))
+    } else grouping.push(quoteIdent(embed.outputName))
+  }
+  return grouping.length ? ` GROUP BY ${grouping.join(', ')}` : ''
+}
 function compileSpreadProjection(plan: ReadPlan, lateralAlias: string): string[] {
-  return projectedColumns(plan).map(column => `${quoteIdent(lateralAlias)}.${quoteIdent(column.sourceName)} AS ${quoteIdent(column.outputName)}`)
+  return projectedColumns(plan).map(column => {
+    let expression = column.sourceName === '*'
+      ? `${quoteIdent(lateralAlias)}.*`
+      : `${quoteIdent(lateralAlias)}.${quoteIdent(column.sourceName)}`
+    if (column.aggregate) {
+      expression = `${column.aggregate}(${expression})`
+      expression = applyCast(expression, column.aggregateCast)
+    }
+    return `${expression} AS ${quoteIdent(column.outputName)}`
+  })
+}
+function withoutHoistedSpreadAggregates(plan: ReadPlan): ReadPlan {
+  return {
+    ...plan,
+    fields: plan.fields.map(field => field.aggregate ? { ...field, aggregate: undefined, aggregateCast: undefined } : field),
+    embeds: plan.embeds.map(embed =>
+      embed.spread && isToOneRelationship(embed.relationship)
+        ? { ...embed, plan: withoutHoistedSpreadAggregates(embed.plan) }
+        : embed,
+    ),
+  }
 }
 function compileFieldExpression(alias: string, column: string): string {
   const parts = column.split(/(->>|->)/)
@@ -78,15 +132,24 @@ function compileFilter(filter: Filter, tableAlias: string, state: CompileState):
     if (value === null) condition = `${field} IS NULL`
     else if (value === true) condition = `${field} IS TRUE`
     else if (value === false) condition = `${field} IS FALSE`
+    else if (value === 'not_null') condition = `${field} IS NOT NULL`
+    else if (value === 'unknown') condition = `${field} IS UNKNOWN`
     else condition = `${field} IS ${addParam(state, value)}`
-  } else if (operator === 'in') {
+  } else if (operator === 'isdistinct') condition = `${field} IS DISTINCT FROM ${addParam(state, value)}`
+  else if (operator === 'in') {
     const values = value as unknown[]
     condition = values.length === 0 ? 'FALSE' : `${field} IN (${values.map(item => addParam(state, item)).join(', ')})`
-  } else if (operator === 'like' || operator === 'ilike') {
-    const pattern = typeof value === 'string' ? value.replace(/\*/g, '%') : value
-    condition = `${field} ${OPERATORS[operator]} ${addParam(state, pattern)}`
-  } else if (FTS[operator]) condition = `${field} @@ ${FTS[operator]}(${addParam(state, value)})`
-  else condition = `${field} ${OPERATORS[operator] ?? '='} ${addParam(state, value)}`
+  } else if (operator === 'like' || operator === 'ilike' || operator === 'match' || operator === 'imatch') {
+    const operand = (operator === 'like' || operator === 'ilike') && typeof value === 'string' ? value.replace(/\*/g, '%') : value
+    const rhs = addParam(state, operand)
+    condition = `${field} ${OPERATORS[operator]} ${filter.quantifier ? `${filter.quantifier.toUpperCase()}(${rhs})` : rhs}`
+  } else if (FTS[operator]) {
+    const args = filter.config ? `${addParam(state, filter.config)}, ${addParam(state, value)}` : addParam(state, value)
+    condition = `${field} @@ ${FTS[operator]}(${args})`
+  } else {
+    const rhs = addParam(state, value)
+    condition = `${field} ${OPERATORS[operator] ?? '='} ${filter.quantifier ? `${filter.quantifier.toUpperCase()}(${rhs})` : rhs}`
+  }
   return negate ? `NOT (${condition})` : condition
 }
 function compileOrderField(alias: string, column: string): string { return compileFieldExpression(alias, column) }
@@ -147,6 +210,7 @@ function appendModifiers(sql:string,plan:ReadPlan,tableAlias:string,state:Compil
   const logicWhere=(plan.logic??[]).map(term=>compileReadLogic(term,tableAlias,state,embedAliases))
   const where=[...extraWhere,...embedWhere,...logicWhere,...(plan.filters??[]).map(filter=>compileFilter(filter,tableAlias,state))]
   if(where.length)sql+=` WHERE ${where.join(' AND ')}`
+  sql += compileGroupBy(plan, tableAlias)
   const order=compileOrder(plan.order,tableAlias,relatedAliases); if(order)sql+=` ORDER BY ${order}`
   const range=compileRange(plan); if(range)sql+=` ${range}`
   return sql
@@ -167,7 +231,10 @@ function compileNode(plan:ReadPlan,state:CompileState,tableAlias:string,parentJo
       let inner=`SELECT ${childSelects.join(', ')} FROM ${qualifiedTable(state.schema,embed.plan.table)} AS ${quoteIdent(childTableAlias)} JOIN ${qualifiedTable(state.schema,junction.table)} AS ${quoteIdent(junctionAlias)} ON ${targetJoin}`
       if(nested.joins.length)inner+=` ${nested.joins.join(' ')}`
       childQuery=appendModifiers(inner,embed.plan,childTableAlias,state,sourceWhere,nested.relatedAliases,nested.relatedAliases)
-    }else childQuery=compileNode(embed.plan,state,childTableAlias,{embed,parentAlias:tableAlias})
+    }else {
+      const childPlan = toOne && embed.spread ? withoutHoistedSpreadAggregates(embed.plan) : embed.plan
+      childQuery=compileNode(childPlan,state,childTableAlias,{embed,parentAlias:tableAlias})
+    }
     if(toOne){
       if(embed.spread) selects.push(...compileSpreadProjection(embed.plan,lateralAlias))
       else selects.push(`row_to_json(${quoteIdent(lateralAlias)}.*)::jsonb AS ${quoteIdent(embed.outputName)}`)
@@ -190,9 +257,13 @@ function compileNode(plan:ReadPlan,state:CompileState,tableAlias:string,parentJo
       }
     }
   }
-  let sql=`SELECT ${selects.join(', ')} FROM ${qualifiedTable(state.schema,plan.table)} AS ${quoteIdent(tableAlias)}`
+  const computed = parentJoin?.embed.relationship.computed
+  const fromSource = computed
+    ? `${qualifiedTable(computed.functionSchema ?? state.schema, computed.functionName)}(${quoteIdent(parentJoin!.parentAlias)}::${qualifiedTable(state.schema, parentJoin!.embed.relationship.sourceTable)})`
+    : qualifiedTable(state.schema, plan.table)
+  let sql=`SELECT ${selects.join(', ')} FROM ${fromSource} AS ${quoteIdent(tableAlias)}`
   if(joins.length)sql+=` ${joins.join(' ')}`
-  const relationshipWhere=parentJoin?joinPredicates(parentJoin.embed,parentJoin.parentAlias,tableAlias):[]
+  const relationshipWhere=parentJoin && !computed?joinPredicates(parentJoin.embed,parentJoin.parentAlias,tableAlias):[]
   return appendModifiers(sql,plan,tableAlias,state,relationshipWhere,relatedAliases,embedAliases)
 }
 function stripRanges(plan:ReadPlan):ReadPlan{return{...plan,order:[],limit:undefined,offset:undefined,embeds:plan.embeds.map(embed=>({...embed,plan:stripRanges(embed.plan)}))}}

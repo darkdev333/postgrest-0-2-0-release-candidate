@@ -25,22 +25,25 @@ const INITIAL_PARAM_INDEX = 1;
  */
 const OPERATOR_MAP: Record<FilterOperator, string> = {
   eq: '=',
-  neq: '!=',
+  neq: '<>',
   gt: '>',
   gte: '>=',
   lt: '<',
   lte: '<=',
   like: 'LIKE',
   ilike: 'ILIKE',
+  match: '~',
+  imatch: '~*',
   is: 'IS',
+  isdistinct: 'IS DISTINCT FROM',
   in: 'IN',
   cs: '@>',      // contains
   cd: '<@',      // contained by
   ov: '&&',      // overlaps
   sl: '<<',      // strictly left of
   sr: '>>',      // strictly right of
-  nxl: '&<',     // does not extend to the right of
-  nxr: '&>',     // does not extend to the left of
+  nxl: '&>',     // does not extend to the left of
+  nxr: '&<',     // does not extend to the right of
   adj: '-|-',    // is adjacent to
   not: 'NOT',
   or: 'OR',
@@ -333,7 +336,6 @@ export class QueryBuilder {
     tableSchema?: TableSchema,
     foreignKeys?: Map<string, ForeignKeyInfo[]>
   ): string {
-    // tableSchema is available for future use (type validation, column existence checks)
     void tableSchema;
 
     if (columns === '*' && embedded.length === 0) {
@@ -346,7 +348,6 @@ export class QueryBuilder {
       parts.push(`"${table}".*`);
     } else {
       for (const col of columns) {
-        // Handle alias notation: col:alias
         const aliasMatch = col.match(/^(\w+):(\w+)$/);
         if (aliasMatch) {
           parts.push(`"${table}"."${aliasMatch[1]}" AS "${aliasMatch[2]}"`);
@@ -356,7 +357,6 @@ export class QueryBuilder {
       }
     }
 
-    // Build subqueries for embedded resources
     for (const embed of embedded) {
       const fk = foreignKeys?.get(embed.name)?.[0];
       if (fk) {
@@ -379,137 +379,94 @@ export class QueryBuilder {
     return parts.join(', ');
   }
 
-  /**
-   * Build a WHERE clause from an array of filters.
-   * Returns empty string if no filters are provided.
-   */
   private buildWhere(filters: Filter[]): string {
     if (filters.length === 0) return '';
-
     const conditions: string[] = [];
-
     for (const filter of filters) {
       const condition = this.buildCondition(filter);
-      if (condition) {
-        conditions.push(condition);
-      }
+      if (condition) conditions.push(condition);
     }
-
     return conditions.join(' AND ');
   }
 
-  /**
-   * Build a single SQL condition from a filter.
-   * Handles logical operators, IS, IN, LIKE, FTS, and standard comparisons.
-   */
   private buildCondition(filter: Filter): string {
-    const { column, operator, value, negate } = filter;
+    const { column, operator, value, negate, config, quantifier } = filter;
 
-    // Handle logical operators (OR/AND groups)
     if (operator === 'or' || operator === 'and') {
-      const subFilters = value as Filter[];
-      const subConditions = subFilters.map(f => this.buildCondition(f)).filter(Boolean);
-      const joiner = operator === 'or' ? ' OR ' : ' AND ';
-      return `(${subConditions.join(joiner)})`;
+      const subConditions = (value as Filter[]).map(f => this.buildCondition(f)).filter(Boolean);
+      const combined = `(${subConditions.join(operator === 'or' ? ' OR ' : ' AND ')})`;
+      return negate ? `NOT (${combined})` : combined;
     }
 
     let condition: string;
-
     switch (operator) {
       case 'is':
         condition = this.buildIsCondition(column, value);
         break;
-
+      case 'isdistinct':
+        condition = `"${column}" IS DISTINCT FROM ${this.addParam(value)}`;
+        break;
       case 'in': {
         const values = value as unknown[];
-        const placeholders = values.map(v => this.addParam(v)).join(', ');
-        condition = `"${column}" IN (${placeholders})`;
+        condition = values.length === 0 ? 'FALSE' : `"${column}" IN (${values.map(v => this.addParam(v)).join(', ')})`;
         break;
       }
-
       case 'like':
-      case 'ilike': {
-        // Convert PostgREST wildcards (*) to SQL wildcards (%)
-        const likeValue = typeof value === 'string' ? value.replace(/\*/g, '%') : value;
-        condition = `"${column}" ${OPERATOR_MAP[operator]} ${this.addParam(likeValue)}`;
+      case 'ilike':
+      case 'match':
+      case 'imatch': {
+        const operand = (operator === 'like' || operator === 'ilike') && typeof value === 'string' ? value.replace(/\*/g, '%') : value;
+        const rhs = this.addParam(operand);
+        condition = `"${column}" ${OPERATOR_MAP[operator]} ${quantifier ? `${quantifier.toUpperCase()}(${rhs})` : rhs}`;
         break;
       }
-
       case 'fts':
       case 'plfts':
       case 'phfts':
       case 'wfts': {
         const ftsFunction = FTS_FUNCTION_MAP[operator]!;
-        condition = `"${column}" @@ ${ftsFunction}(${this.addParam(value)})`;
+        const args = config ? `${this.addParam(config)}, ${this.addParam(value)}` : this.addParam(value);
+        condition = `"${column}" @@ ${ftsFunction}(${args})`;
         break;
       }
-
       default: {
-        const sqlOperator = OPERATOR_MAP[operator] || '=';
-        condition = `"${column}" ${sqlOperator} ${this.addParam(value)}`;
+        const rhs = this.addParam(value);
+        condition = `"${column}" ${OPERATOR_MAP[operator] || '='} ${quantifier ? `${quantifier.toUpperCase()}(${rhs})` : rhs}`;
       }
     }
 
     return negate ? `NOT (${condition})` : condition;
   }
 
-  /**
-   * Build an IS condition for null, true, or false checks.
-   */
   private buildIsCondition(column: string, value: unknown): string {
     if (value === null) return `"${column}" IS NULL`;
     if (value === true) return `"${column}" IS TRUE`;
     if (value === false) return `"${column}" IS FALSE`;
+    if (value === 'not_null') return `"${column}" IS NOT NULL`;
+    if (value === 'unknown') return `"${column}" IS UNKNOWN`;
     return `"${column}" IS ${this.addParam(value)}`;
   }
 
-  /**
-   * Build an ORDER BY clause from order specifications.
-   * Returns empty string if no order is specified.
-   */
   private buildOrderBy(order: OrderClause[]): string {
     if (order.length === 0) return '';
-
     return order
       .map(({ column, direction, nullsFirst }) => {
         let clause = `"${column}" ${direction.toUpperCase()}`;
-        if (nullsFirst !== undefined) {
-          clause += nullsFirst ? ' NULLS FIRST' : ' NULLS LAST';
-        }
+        if (nullsFirst !== undefined) clause += nullsFirst ? ' NULLS FIRST' : ' NULLS LAST';
         return clause;
       })
       .join(', ');
   }
 
-  /**
-   * Build a LIMIT/OFFSET clause, applying default and maximum limits.
-   * Returns empty string if no pagination is needed.
-   */
   private buildLimitOffset(limit?: number, offset?: number): string {
     const parts: string[] = [];
-
-    // Apply default/max limits
     let effectiveLimit = limit ?? this.options.defaultLimit;
-    if (effectiveLimit !== undefined && this.options.maxLimit !== undefined) {
-      effectiveLimit = Math.min(effectiveLimit, this.options.maxLimit);
-    }
-
-    if (effectiveLimit !== undefined) {
-      parts.push(`LIMIT ${effectiveLimit}`);
-    }
-
-    if (offset !== undefined && offset > 0) {
-      parts.push(`OFFSET ${offset}`);
-    }
-
+    if (effectiveLimit !== undefined && this.options.maxLimit !== undefined) effectiveLimit = Math.min(effectiveLimit, this.options.maxLimit);
+    if (effectiveLimit !== undefined) parts.push(`LIMIT ${effectiveLimit}`);
+    if (offset !== undefined && offset > 0) parts.push(`OFFSET ${offset}`);
     return parts.join(' ');
   }
 
-  /**
-   * Build JOINs for embedded resources.
-   * Currently returns empty as simple cases use subqueries in SELECT.
-   * Reserved for more complex join scenarios.
-   */
   private buildJoins(
     _table: string,
     _embedded: EmbeddedResource[],
@@ -518,40 +475,17 @@ export class QueryBuilder {
     return '';
   }
 
-  /**
-   * Add a value to the parameter list and return its placeholder ($N).
-   */
   private addParam(value: unknown): string {
     this.params.push(value);
     return '$' + this.paramIndex++;
   }
 
-  /**
-   * Reset the builder state for a new query.
-   */
   private reset(): void {
     this.paramIndex = INITIAL_PARAM_INDEX;
     this.params = [];
   }
 }
 
-// --- Convenience Function ---
-
-/**
- * Convenience function to build a query without manually managing a QueryBuilder instance.
- *
- * @param type - The type of query to build
- * @param table - Target table (or function name for 'rpc')
- * @param options - Query-specific options
- * @returns Built query
- *
- * @example
- * ```ts
- * const query = buildQuery('select', 'users', {
- *   query: { columns: '*', embedded: [], filters: [], order: [] },
- * });
- * ```
- */
 export function buildQuery(
   type: 'select' | 'insert' | 'update' | 'delete' | 'rpc',
   table: string,
@@ -576,32 +510,14 @@ export function buildQuery(
         options.tableSchema,
         options.foreignKeys
       );
-
     case 'insert':
-      return builder.buildInsert(
-        table,
-        options.data || {},
-        options.returning
-      );
-
+      return builder.buildInsert(table, options.data || {}, options.returning);
     case 'update':
-      return builder.buildUpdate(
-        table,
-        options.data as Record<string, unknown> || {},
-        options.filters || [],
-        options.returning
-      );
-
+      return builder.buildUpdate(table, options.data as Record<string, unknown> || {}, options.filters || [], options.returning);
     case 'delete':
-      return builder.buildDelete(
-        table,
-        options.filters || [],
-        options.returning
-      );
-
+      return builder.buildDelete(table, options.filters || [], options.returning);
     case 'rpc':
       return builder.buildRPC(table, options.args);
-
     default:
       throw new Error(`Unknown query type: ${type}`);
   }

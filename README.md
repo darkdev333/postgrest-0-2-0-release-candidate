@@ -67,6 +67,9 @@ The implementation already includes substantial compatibility work across:
 - schema profiles via `Accept-Profile` and `Content-Profile`;
 - `Prefer` parsing and response application for supported preferences;
 - transactional request execution and request-local session context through an optional executor capability;
+- verified-auth/RLS context propagation across flat reads, embedded reads, writes, and RPC;
+- optional structured observability hooks for request, SQL, timing, response, and error diagnostics;
+- computed relationships and view-derived relationships, including recursive/self and many-to-many cases;
 - insert/upsert behavior and conflict targets;
 - RPC GET/POST handling and overload resolution for common named-argument cases;
 - PostgREST-shaped errors for many compatibility paths;
@@ -134,7 +137,52 @@ export type SQLExecutor = SQLStatementExecutor & {
 
 The executor adapter owns database-specific transaction handling and session setup. For a Supabase-like local backend, that can include request-local PostgreSQL role/settings such as verified JWT claims used by RLS policies.
 
-See [`INTEGRATION.md`](./INTEGRATION.md) for the integration contract and browser-runtime notes.
+### Verified auth and RLS integration
+
+The PostgREST adapter is deliberately **not** the Supabase Auth/GoTrue implementation. Authentication should be verified by the gateway/auth layer first. The verified identity is then supplied through `transactionContext(request, schema)` and applied by `SQLExecutor.transaction` as request-local PostgreSQL session state:
+
+```ts
+const api = createPostgRESTRouter(sql, {
+  transactionContext(request, schema) {
+    const session = getVerifiedSession(request)
+    return {
+      schema,
+      role: session?.role ?? 'anon',
+      settings: {
+        'request.jwt.claims': JSON.stringify(session?.claims ?? {}),
+        'request.headers': JSON.stringify(Object.fromEntries(request.headers)),
+      },
+    }
+  },
+})
+```
+
+The executor's transaction implementation should translate that trusted context into PostgreSQL-local state (for example `SET LOCAL ROLE` and `set_config(..., true)`) before executing request SQL. Flat reads, embedded reads, writes, and RPC all use this same boundary, so RLS policies see one consistent request identity.
+
+Do not decode an unverified bearer token inside the PostgREST router and treat its claims as trusted database identity. The retained `src/auth.ts` module is legacy/helper middleware from the historical TypeScript substrate; it is not the authoritative Supabase Auth/GoTrue implementation and is intentionally not exported from the package root.
+
+Supabase Storage, Realtime, Auth, and Edge Functions are separate service surfaces. This package handles the PostgREST REST surface and PostgreSQL RPC (`/rpc/*`); shared RLS/session plumbing can be reused by those other emulators, but their service semantics live outside this adapter.
+
+### Optional observability
+
+`createPostgRESTRouter` accepts an optional zero-behavior-impact observer for debugging and integration telemetry:
+
+```ts
+const api = createPostgRESTRouter(sql, {
+  observer(event) {
+    diagnostics.push(event)
+  },
+  observerOptions: {
+    includeHeaders: true,
+    includeParams: false,
+    includeSettings: false,
+  },
+})
+```
+
+Events cover request receipt/parsing, generated and executed SQL, execution timing/row counts, response status, and normalized failures. Observer exceptions are swallowed so diagnostics cannot change request behavior. Headers, bound parameters, and transaction settings are opt-in; Authorization/Cookie headers are redacted by default, and JWT/token/cookie/secret-like session settings remain redacted when settings are enabled unless a custom redactor deliberately changes that policy.
+
+See [`INTEGRATION.md`](./INTEGRATION.md) for the full integration contract and browser-runtime notes.
 
 ## Basic usage
 
@@ -213,4 +261,17 @@ New work in the `0.2.x` line is contributed under this repository's MIT license.
 
 ## Repository
 
-The public development repository is [darkdev333/postgrest-0.2.0](https://github.com/darkdev333/postgrest-0.2.0). The package is not currently published to npm under a new name; `package.json` is marked `private` to prevent accidental publication while the public package identity is decided.
+The current public release-candidate repository is [darkdev333/postgrest-0-2-0-release-candidate](https://github.com/darkdev333/postgrest-0-2-0-release-candidate). The package is not currently published to npm under a new name; `package.json` is marked `private` to prevent accidental publication while the public package identity is decided.
+
+
+## Relationship ambiguity and authenticated embeds
+
+PostgREST does not guess between multiple foreign keys. If two relationships connect the same resources, an unhinted embed correctly returns HTTP 300 / `PGRST201`. Disambiguate with either an FK constraint name or a single FK column, for example:
+
+```ts
+.select("*, grants:profile_roles!profile_id(role:roles(key))")
+```
+
+The equivalent constraint form is `profile_roles!profile_roles_profile_id_fkey(...)`. PGRST201 responses include `details` describing the candidate relationships plus a `hint` with valid relationship selectors.
+
+Authentication remains an integration boundary: verify the session upstream and populate `transactionContext(request, schema)` with the PostgreSQL role and settings such as `request.jwt.claims`. Parent and embedded scans execute within the same SQL transaction, so PostgreSQL applies RLS independently to every relation scanned, including embedded tables. The legacy `src/auth.ts` module is not a replacement for Supabase Auth / GoTrue verification.

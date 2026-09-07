@@ -1,8 +1,13 @@
+import { assembleViewAwareRelationships } from './relationship-assembly.js';
+import { VIEW_KEY_DEPENDENCIES_SQL, viewDependenciesFromCatalogRows } from './view-relationship-catalog.js';
+import { qualifiedRelationKey } from './view-relationships.js';
+export { VIEW_KEY_DEPENDENCIES_SQL, viewDependenciesFromCatalogRows } from './view-relationship-catalog.js';
 export const RELATIONSHIPS_SQL = `
 WITH fk_constraints AS (
   SELECT
     src_ns.nspname AS source_schema,
     src.relname AS source_table,
+    tgt_ns.nspname AS target_schema,
     tgt.relname AS target_table,
     con.conname AS constraint_name,
     array_agg(src_att.attname ORDER BY key_cols.ord) AS source_columns,
@@ -26,16 +31,51 @@ WITH fk_constraints AS (
   JOIN pg_class src ON src.oid = con.conrelid
   JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace
   JOIN pg_class tgt ON tgt.oid = con.confrelid
+  JOIN pg_namespace tgt_ns ON tgt_ns.oid = tgt.relnamespace
   CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS key_cols(src_attnum, tgt_attnum, ord)
   JOIN pg_attribute src_att ON src_att.attrelid = con.conrelid AND src_att.attnum = key_cols.src_attnum
   JOIN pg_attribute tgt_att ON tgt_att.attrelid = con.confrelid AND tgt_att.attnum = key_cols.tgt_attnum
-  WHERE con.contype = 'f' AND src_ns.nspname = $1
-  GROUP BY src_ns.nspname, src.relname, tgt.relname, con.conname, con.conrelid, con.conkey
+  WHERE con.contype = 'f'
+    AND con.conparentid = 0
+  GROUP BY src_ns.nspname, src.relname, tgt_ns.nspname, tgt.relname, con.conname, con.conrelid, con.conkey
 )
-SELECT source_schema, source_table, target_table, constraint_name,
+SELECT source_schema, source_table, target_schema, target_table, constraint_name,
        source_columns, target_columns, source_unique, source_primary_key
 FROM fk_constraints
 ORDER BY source_table, constraint_name
+`;
+/** Discover PostgREST computed relationships: one-argument functions whose
+ * argument is a composite relation type and whose return type is another
+ * composite relation type. `ROWS 1` (or a non-SETOF return) marks a to-one
+ * relationship, matching upstream's `not proretset or prorows = 1` rule. */
+export const COMPUTED_RELATIONSHIPS_SQL = `
+WITH all_relations AS (
+  SELECT reltype
+  FROM pg_class
+  WHERE relkind IN ('v','r','m','f','p')
+)
+SELECT
+  fn_ns.nspname AS function_schema,
+  p.proname AS function_name,
+  arg_ns.nspname AS source_schema,
+  arg_type.typname AS source_table,
+  ret_ns.nspname AS target_schema,
+  ret_type.typname AS target_table,
+  (NOT p.proretset OR p.prorows = 1) AS single_row
+FROM pg_proc p
+JOIN pg_namespace fn_ns ON fn_ns.oid = p.pronamespace
+JOIN pg_type arg_type ON arg_type.oid = p.proargtypes[0]
+JOIN pg_namespace arg_ns ON arg_ns.oid = arg_type.typnamespace
+JOIN pg_type ret_type ON ret_type.oid = p.prorettype
+JOIN pg_namespace ret_ns ON ret_ns.oid = ret_type.typnamespace
+WHERE p.pronargs = 1
+  AND p.prokind = 'f'
+  AND p.proargtypes[0] IN (SELECT reltype FROM all_relations)
+  AND p.prorettype IN (SELECT reltype FROM all_relations)
+  AND fn_ns.nspname = $1
+  AND arg_ns.nspname = $1
+  AND ret_ns.nspname = $1
+ORDER BY source_table, function_name
 `;
 function textArray(value) {
     if (Array.isArray(value))
@@ -49,12 +89,11 @@ function textArray(value) {
         return [];
     return body.split(',').map(item => item.replace(/^"|"$/g, ''));
 }
-function isSubset(values, container) {
-    return values.length > 0 && values.every(value => container.includes(value));
-}
 function decodeFK(row) {
     return {
+        sourceSchema: row.source_schema == null ? undefined : String(row.source_schema),
         sourceTable: String(row.source_table),
+        targetSchema: row.target_schema == null ? undefined : String(row.target_schema),
         targetTable: String(row.target_table),
         constraintName: String(row.constraint_name),
         sourceColumns: textArray(row.source_columns),
@@ -63,83 +102,111 @@ function decodeFK(row) {
         sourcePrimaryKey: textArray(row.source_primary_key),
     };
 }
-export function relationshipsFromCatalogRows(rows) {
-    const fks = rows.map(decodeFK);
-    const relationships = [];
-    for (const fk of fks) {
+function rowBelongsToSchema(schema, sourceSchema, targetSchema) {
+    if (!schema)
+        return true;
+    if (sourceSchema && sourceSchema !== schema)
+        return false;
+    if (targetSchema && targetSchema !== schema)
+        return false;
+    return true;
+}
+function baseRelationshipState(rows) {
+    const direct = [];
+    const primaryKeys = new Map();
+    for (const fk of rows.map(decodeFK)) {
         const pairs = fk.sourceColumns.map((source, index) => ({ source, target: fk.targetColumns[index] ?? '' }));
-        const directCardinality = fk.sourceUnique ? 'one-to-one' : 'many-to-one';
-        relationships.push({
+        direct.push({
+            sourceSchema: fk.sourceSchema,
             sourceTable: fk.sourceTable,
+            targetSchema: fk.targetSchema,
             targetTable: fk.targetTable,
             constraintName: fk.constraintName,
-            cardinality: directCardinality,
+            cardinality: fk.sourceUnique ? 'one-to-one' : 'many-to-one',
             columnPairs: pairs,
-            self: fk.sourceTable === fk.targetTable,
+            self: fk.sourceTable === fk.targetTable && (!fk.sourceSchema || !fk.targetSchema || fk.sourceSchema === fk.targetSchema),
         });
-        relationships.push({
-            sourceTable: fk.targetTable,
-            targetTable: fk.sourceTable,
-            constraintName: fk.constraintName,
-            cardinality: fk.sourceUnique ? 'one-to-one' : 'one-to-many',
-            columnPairs: pairs.map(pair => ({ source: pair.target, target: pair.source })),
-            self: fk.sourceTable === fk.targetTable,
-        });
-    }
-    const bySource = new Map();
-    for (const fk of fks) {
-        const list = bySource.get(fk.sourceTable) ?? [];
-        list.push(fk);
-        bySource.set(fk.sourceTable, list);
-    }
-    for (const [junctionTable, junctionFKs] of bySource) {
-        for (let i = 0; i < junctionFKs.length; i += 1) {
-            for (let j = i + 1; j < junctionFKs.length; j += 1) {
-                const left = junctionFKs[i];
-                const right = junctionFKs[j];
-                if (left.targetTable === right.targetTable)
-                    continue;
-                const keyColumns = [...new Set([...left.sourceColumns, ...right.sourceColumns])];
-                const primaryKey = left.sourcePrimaryKey.length ? left.sourcePrimaryKey : right.sourcePrimaryKey;
-                if (!isSubset(keyColumns, primaryKey))
-                    continue;
-                relationships.push({
-                    sourceTable: left.targetTable,
-                    targetTable: right.targetTable,
-                    constraintName: `${left.constraintName}:${right.constraintName}`,
-                    cardinality: 'many-to-many',
-                    columnPairs: [],
-                    self: false,
-                    junction: {
-                        table: junctionTable,
-                        sourceConstraint: left.constraintName,
-                        targetConstraint: right.constraintName,
-                        sourceColumns: left.targetColumns.map((source, index) => ({ source, target: left.sourceColumns[index] ?? '' })),
-                        targetColumns: right.sourceColumns.map((source, index) => ({ source, target: right.targetColumns[index] ?? '' })),
-                    },
-                });
-                relationships.push({
-                    sourceTable: right.targetTable,
-                    targetTable: left.targetTable,
-                    constraintName: `${right.constraintName}:${left.constraintName}`,
-                    cardinality: 'many-to-many',
-                    columnPairs: [],
-                    self: false,
-                    junction: {
-                        table: junctionTable,
-                        sourceConstraint: right.constraintName,
-                        targetConstraint: left.constraintName,
-                        sourceColumns: right.targetColumns.map((source, index) => ({ source, target: right.sourceColumns[index] ?? '' })),
-                        targetColumns: left.sourceColumns.map((source, index) => ({ source, target: left.targetColumns[index] ?? '' })),
-                    },
-                });
-            }
+        if (fk.sourcePrimaryKey.length) {
+            primaryKeys.set(qualifiedRelationKey(fk.sourceSchema, fk.sourceTable), fk.sourcePrimaryKey);
+            if (!primaryKeys.has(fk.sourceTable))
+                primaryKeys.set(fk.sourceTable, fk.sourcePrimaryKey);
         }
     }
-    return relationships;
+    return { direct, primaryKeys };
+}
+function relationshipBelongsToSchema(relationship, schema) {
+    if (!schema)
+        return true;
+    if (relationship.sourceSchema && relationship.sourceSchema !== schema)
+        return false;
+    if (relationship.targetSchema && relationship.targetSchema !== schema)
+        return false;
+    if (relationship.junction?.schema && relationship.junction.schema !== schema)
+        return false;
+    return true;
+}
+function filterRelationshipsToSchema(relationships, exposedSchema) {
+    return relationships.filter(relationship => relationshipBelongsToSchema(relationship, exposedSchema));
+}
+/** Backwards-compatible table-only relationship assembly. */
+export function relationshipsFromCatalogRows(rows, exposedSchema) {
+    const { direct, primaryKeys } = baseRelationshipState(rows);
+    return filterRelationshipsToSchema(assembleViewAwareRelationships(direct, primaryKeys, []), exposedSchema);
+}
+/** Upstream-ordered FK/view relationship graph assembly. Internal base FKs are
+ * intentionally retained through view derivation, then removed at the end like
+ * upstream `removeInternal`; pre-filtering here would lose valid exposed
+ * view-to-view relationships derived from private underlying tables. */
+export function relationshipsFromCatalogAndViewRows(rows, viewRows, exposedSchema) {
+    const { direct, primaryKeys } = baseRelationshipState(rows);
+    const dependencies = viewDependenciesFromCatalogRows(viewRows);
+    return filterRelationshipsToSchema(assembleViewAwareRelationships(direct, primaryKeys, dependencies), exposedSchema);
+}
+export function relationshipsFromComputedRows(rows, exposedSchema) {
+    return rows.flatMap(row => {
+        const sourceSchema = row.source_schema == null ? undefined : String(row.source_schema);
+        const targetSchema = row.target_schema == null ? undefined : String(row.target_schema);
+        const functionSchema = row.function_schema == null ? undefined : String(row.function_schema);
+        if (!rowBelongsToSchema(exposedSchema, sourceSchema, targetSchema))
+            return [];
+        // Upstream's deformed relationship map is looked up by the request schema;
+        // a computed relationship function in another schema is therefore not a
+        // candidate even when its argument/return relation types are exposed.
+        if (exposedSchema && functionSchema && functionSchema !== exposedSchema)
+            return [];
+        const sourceTable = String(row.source_table);
+        const targetTable = String(row.target_table);
+        const functionName = String(row.function_name);
+        const singleRow = row.single_row === true || row.single_row === 't' || row.single_row === 'true';
+        return [{
+                sourceSchema,
+                sourceTable,
+                targetSchema,
+                targetTable,
+                constraintName: functionName,
+                cardinality: singleRow ? 'one-to-one' : 'one-to-many',
+                columnPairs: [],
+                self: sourceTable === targetTable && (!sourceSchema || !targetSchema || sourceSchema === targetSchema),
+                computed: {
+                    functionName,
+                    functionSchema,
+                },
+            }];
+    });
+}
+/** Match upstream getOverrideRelationshipsMap: a computed relationship named
+ * like a detected foreign relation replaces the whole detected relationship
+ * bucket for that source/target pair. */
+export function applyComputedRelationshipOverrides(detected, computed) {
+    const overrideKeys = new Set(computed.map(relationship => `${relationship.sourceTable}\u0000${relationship.computed?.functionName ?? relationship.targetTable}`));
+    return [
+        ...detected.filter(relationship => !overrideKeys.has(`${relationship.sourceTable}\u0000${relationship.targetTable}`)),
+        ...computed,
+    ];
 }
 export class RelationshipCache {
     schema;
+    extraSearchPath;
     cacheTTL;
     queryFn;
     cached = [];
@@ -147,6 +214,7 @@ export class RelationshipCache {
     refreshPromise = null;
     constructor(options) {
         this.schema = options.schema ?? 'public';
+        this.extraSearchPath = [...(options.extraSearchPath ?? [])];
         this.cacheTTL = options.cacheTTL ?? 60000;
         this.queryFn = options.queryFn;
     }
@@ -168,8 +236,14 @@ export class RelationshipCache {
     }
     clear() { this.cached = []; this.lastRefresh = 0; }
     async doRefresh() {
-        const result = await this.queryFn(RELATIONSHIPS_SQL, [this.schema]);
-        this.cached = relationshipsFromCatalogRows(result.rows);
+        const [fkResult, viewResult, computedResult] = await Promise.all([
+            this.queryFn(RELATIONSHIPS_SQL),
+            this.queryFn(VIEW_KEY_DEPENDENCIES_SQL, [[this.schema], this.extraSearchPath]),
+            this.queryFn(COMPUTED_RELATIONSHIPS_SQL, [this.schema]),
+        ]);
+        const detected = relationshipsFromCatalogAndViewRows(fkResult.rows, viewResult.rows, this.schema);
+        const computed = relationshipsFromComputedRows(computedResult.rows, this.schema);
+        this.cached = applyComputedRelationshipOverrides(detected, computed);
         this.lastRefresh = Date.now();
     }
 }

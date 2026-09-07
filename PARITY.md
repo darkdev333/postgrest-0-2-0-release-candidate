@@ -152,3 +152,14 @@ Before the browser smoke-test phase, the inherited `@dotdo/postgres-shared` runt
 The first real browser/PGlite smoke run found that bound-value SQL reached `SQLExecutor` with the `$` prefix stripped from PostgreSQL placeholders despite source and compiled `dist` containing valid `` `$${n}` `` JavaScript. To avoid any source/bundle interpolation ambiguity, every placeholder generator now uses `'$' + n` instead. This covers flat queries, replacement read-plan SQL, INSERT/PATCH/DELETE, and RPC. Public-router boundary coverage now asserts both SQL `$1` and the matching parameter array.
 
 Current verified gate after this integration fix: **32/32 test files, 316/316 tests**, production typecheck passing, clean production build passing.
+
+
+### 2026-09-06 — reconciled executable checkpoint
+The current DiagramCraft source was reconciled with uncaptured post-Sep-4 parity work, using upstream Haskell PostgREST as the authority rather than abandoned dotdo expectations. Restored/verified: canonical comparison/range SQL (`neq <>`, `nxl &>`, `nxr &<`), `match`/`imatch`, `isdistinct`, configured FTS, ANY/ALL quantifiers, case-insensitive `IS` whitelist including `not_null`/`unknown`, aggregate/cast select AST handling, PATCH filter parity, recursive/self many-to-many graph/cache discovery, and dual FK/computed relationship cache introspection. Current local gate: **32/32 files, 325/325 tests PASS** plus production typecheck. Remaining work is long-tail upstream parity; current estimate remains roughly low-80%s overall rather than a test-count percentage.
+
+
+## 2026-09-07 release milestone
+
+The 0.2.0 release candidate passed 43 test files / 365 tests plus clean typecheck, production build, package dry-run and built-package smoke. Current relationship parity includes ambiguity-preserving resolution with `!constraint` / `!column` hints, computed-relationship override semantics, view-derived relationships, schema-aware filtering, M2M PK-subset detection, and recursive/self cases. The DLR `profiles` -> `profile_roles` two-FK case is intentionally PGRST201/300 when unhinted and resolves with `profile_roles!profile_id(...)`, matching upstream rather than silently guessing.
+
+Auth parity at the adapter boundary means verified role/session settings are carried through `transactionContext` into the SQL transaction for flat reads, writes, embedded reads and RPC. JWT/GoTrue verification itself remains the responsibility of the host Auth implementation. Embedded-table RLS is therefore PostgreSQL policy behavior under the same transaction context; a concrete real-policy PGlite embed test remains desirable integration coverage, not a reason to bypass ambiguity or flatten the query.

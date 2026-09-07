@@ -265,9 +265,7 @@ describe('Advanced Filtering (postgres-e5pc.4)', () => {
     })
 
     it('should reject is with non-null/boolean values', () => {
-      const filter = parser.parseFilter('name', 'is.something')
-      // 'is' should only accept null, true, false
-      expect(filter?.value).not.toBe('something')
+      expect(() => parser.parseFilter('name', 'is.something')).toThrow()
     })
   })
 
@@ -464,7 +462,7 @@ describe('Advanced Filtering (postgres-e5pc.4)', () => {
         order: [],
       }
       const result = builder.buildSelect('users', query)
-      expect(result.sql).toContain('"status" !=')
+      expect(result.sql).toContain('"status" <>')
       expect(result.params).toContain('deleted')
     })
   })
@@ -987,8 +985,7 @@ describe('Advanced Filtering (postgres-e5pc.4)', () => {
 
   describe('Edge Cases and Error Handling', () => {
     it('should reject unknown filter operators', () => {
-      const filter = parser.parseFilter('name', 'unknown_op.value')
-      expect(filter).toBeNull()
+      expect(() => parser.parseFilter('name', 'unknown_op.value')).toThrow()
     })
 
     it('should handle filter values with dots (like email)', () => {
@@ -1040,9 +1037,7 @@ describe('Advanced Filtering (postgres-e5pc.4)', () => {
     })
 
     it('should handle empty filter value', () => {
-      const filter = parser.parseFilter('name', '')
-      // Empty string should either return null or default to eq with empty value
-      expect(filter === null || filter?.value === '').toBe(true)
+      expect(() => parser.parseFilter('name', '')).toThrow()
     })
   })
 })

@@ -126,3 +126,26 @@
 - Removed `${...}` syntax from all PostgreSQL placeholder generators and now construct placeholders with string concatenation (`'$' + n`) in the legacy builder, insert/update/RPC compilers, and replacement read SQL compiler. This is semantically identical in JavaScript while remaining robust through the Application Preview source/bundle pipeline.
 - Tightened embedded-route SQL assertions and added a public-router boundary regression proving bound parameters reach `SQLExecutor` as `$1` plus the corresponding parameter array.
 - Verified gate: **32/32 Vitest files, 316/316 tests**, production `tsc --noEmit` passing, and clean `tsc` build passing.
+
+- Aligned computed-relationship catalog discovery with upstream relation row-type restrictions (`relkind` v/r/m/f/p), excluding arbitrary PostgreSQL composite types.
+- Fixed recursive many-to-many relationship discovery when both junction FKs target the same table; preserves both directional constraint pairings and marks them self relationships.
+- Reconciled upstream computed/recursive relationship tests into the Linux gate: 330/330 tests pass; typecheck and build pass.
+
+
+### 2026-09-07 — exposed-schema relationship filtering and computed override
+- Match upstream `removeInternal`: FK relationship discovery now requires both endpoints to be in the active exposed schema, with decoder-side defense against explicit cross-schema rows.
+- Computed relationship discovery now restricts function, argument-row and return-row schemas to the active schema.
+- Match upstream `getOverrideRelationshipsMap`: computed relationships replace the entire detected source/target bucket when the computed function name is the target selector.
+- Added `cross-schema-computed-override.test.ts` (5 upstream-derived tests). Focused relationship/cache/computed gate is green; full-tree release gate remains pending.
+
+- Follow-up: moved exposed-schema filtering to the upstream-correct post-assembly stage. FK discovery now retains schema identity long enough to derive exposed view relationships from internal/private base FKs, while final cache publication still removes internal endpoints/junctions. View dependency and M2M grouping are now schema-qualified to prevent same-name cross-schema collisions. Focused relationship/view/cache gate: 37/37 + clean typecheck.
+
+
+## 2026-09-07 — 0.2.0 release checkpoint
+
+- Release gate: 43 test files / 365 tests passing; typecheck, production build, package dry-run and built-package smoke all clean.
+- Added optional public-router observability hooks with structured request/SQL/response/error events and redaction-safe defaults.
+- Verified transaction-context propagation for authenticated flat reads, mutations, embedded reads and RPC.
+- Advanced relationship parity: computed overrides, view-derived relationships, cross-schema filtering, M2M PK-subset discovery and recursive/self handling.
+- Confirmed upstream ambiguity behavior: unhinted multi-FK embeds return PGRST201/300; `!constraint` and `!column` hints disambiguate nested outer hops.
+- Refreshed stale generated `dist/errors.*` from current source and smoke-validated structured PGRST error behavior.

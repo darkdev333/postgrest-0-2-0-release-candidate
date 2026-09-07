@@ -5,7 +5,9 @@ export { buildReadPlan, RelationshipResolutionError } from './read-plan.js';
 export { applyReadQueryParams, ReadQueryPathError, RelatedOrderError } from './read-query.js';
 export { buildReadSQL, buildReadCountSQL } from './read-sql.js';
 export { SchemaCache } from './schema.js';
-export { RelationshipCache, RELATIONSHIPS_SQL, relationshipsFromCatalogRows } from './relationship-cache.js';
+export { RelationshipCache, RELATIONSHIPS_SQL, COMPUTED_RELATIONSHIPS_SQL, VIEW_KEY_DEPENDENCIES_SQL, relationshipsFromCatalogRows, relationshipsFromCatalogAndViewRows, relationshipsFromComputedRows, viewDependenciesFromCatalogRows } from './relationship-cache.js';
+export { deriveViewRelationships, expandViewColumnDependencies, viewPrimaryKeys } from './view-relationships.js';
+export { addInverseRelationships, discoverManyToManyRelationships, assembleViewAwareRelationships } from './relationship-assembly.js';
 export { buildRelationships, findRelationshipCandidates, foreignKeyRowsToPairs, isToOneRelationship } from './relationships.js';
 export { RoutineCache, matchRoutineByNamedArgs, routineSignature } from './routines.js';
 export { buildRpcEnvelopeQuery, decodeRpcEnvelope, partitionGetRpcParams } from './rpc.js';
@@ -16,5 +18,6 @@ export { normalizePostgRESTError, postgresStatus, singularCardinalityError, requ
 export { acceptsSingularObject, JSON_MEDIA_TYPE, SINGULAR_MEDIA_TYPE, SINGULAR_MEDIA_TYPE_SHORT } from './media.js';
 export { buildInsertStatement, applyInsertPreferenceHeaders } from './insert.js';
 export { hasTransactionCapability, withOptionalTransaction } from './executor.js';
+export { observedExecutor, emitObserver, requestHeadersForObserver, paramsForObserver, contextForObserver } from './telemetry.js';
 export { csp, securityHeaders, API_CSP_DEFAULTS, STRICT_WEB_CSP, DEVELOPMENT_CSP, CSP_PRESETS, buildCSPHeader, generateSecureNonce, getDefaultDirectives } from './security.js';
 //# sourceMappingURL=index.js.map

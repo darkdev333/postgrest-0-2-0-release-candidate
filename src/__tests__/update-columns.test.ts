@@ -26,6 +26,36 @@ describe('PATCH columns and missing semantics',()=>{
     expect(buildUpdateStatement('items',{},[],{})).toBeNull();
   });
 
+
+  it('keeps PATCH target filters aligned with upstream read/RPC operators',()=>{
+    const built=buildUpdateStatement('items',{status:'done'},[
+      {column:'name',operator:'imatch',value:'^a'},
+      {column:'window',operator:'nxl',value:'[4,7]'},
+      {column:'done',operator:'is',value:'unknown'},
+      {column:'body',operator:'fts',value:'fat cats',config:'english'},
+      {column:'id',operator:'eq',value:'{3,4,5}',quantifier:'any'},
+      {column:'state',operator:'isdistinct',value:'archived'},
+    ],{schema:'public'})!;
+    expect(built.sql).toContain('"name" ~* $2');
+    expect(built.sql).toContain('"window" &> $3');
+    expect(built.sql).toContain('"done" IS UNKNOWN');
+    expect(built.sql).toContain('"body" @@ to_tsquery($4, $5)');
+    expect(built.sql).toContain('"id" = ANY($6)');
+    expect(built.sql).toContain('"state" IS DISTINCT FROM $7');
+    expect(built.params).toEqual(['done','^a','[4,7]','english','fat cats','{3,4,5}','archived']);
+  });
+
+  it('uses canonical neq/nxl/nxr spellings on PATCH filters',()=>{
+    const built=buildUpdateStatement('items',{status:'done'},[
+      {column:'old_status',operator:'neq',value:'deleted'},
+      {column:'left_range',operator:'nxl',value:'[1,2]'},
+      {column:'right_range',operator:'nxr',value:'[3,4]'},
+    ])!;
+    expect(built.sql).toContain('"old_status" <> $2');
+    expect(built.sql).toContain('"left_range" &> $3');
+    expect(built.sql).toContain('"right_range" &< $4');
+  });
+
   it('rejects unknown explicit columns before mutation',async()=>{
     let updates=0;
     const sql=vi.fn(async(statement:string)=>{

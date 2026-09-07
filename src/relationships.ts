@@ -12,6 +12,7 @@ export interface RelationshipColumnPair {
 }
 
 export interface ManyToManyJunction {
+  schema?: string
   table: string
   sourceConstraint: string
   targetConstraint: string
@@ -19,18 +20,30 @@ export interface ManyToManyJunction {
   targetColumns: RelationshipColumnPair[]
 }
 
+export interface ComputedRelationshipInfo {
+  functionName: string
+  functionSchema?: string
+}
+
 export interface RelationshipInfo {
+  sourceSchema?: string
   sourceTable: string
+  targetSchema?: string
   targetTable: string
   constraintName: string
   cardinality: RelationshipCardinality
   columnPairs: RelationshipColumnPair[]
   self: boolean
+  sourceIsView?: boolean
+  targetIsView?: boolean
   junction?: ManyToManyJunction
+  computed?: ComputedRelationshipInfo
 }
 
 interface GroupedForeignKey {
+  sourceSchema?: string
   sourceTable: string
+  targetSchema?: string
   targetTable: string
   constraintName: string
   columnPairs: RelationshipColumnPair[]
@@ -46,6 +59,15 @@ function sameSet(a: string[], b: string[]): boolean {
   return aa.length === bb.length && aa.every((value, index) => value === bb[index])
 }
 
+function isSubset(values: string[], container: string[]): boolean {
+  const unique = sortedUnique(values)
+  return unique.length > 0 && unique.every(value => container.includes(value))
+}
+
+function sameRelation(aSchema: string | undefined, aTable: string, bSchema: string | undefined, bTable: string): boolean {
+  return aTable === bTable && (!aSchema || !bSchema || aSchema === bSchema)
+}
+
 function groupsForTable(table: TableSchema): GroupedForeignKey[] {
   const grouped = new Map<string, GroupedForeignKey>()
 
@@ -54,7 +76,9 @@ function groupsForTable(table: TableSchema): GroupedForeignKey[] {
     let group = grouped.get(key)
     if (!group) {
       group = {
+        sourceSchema: table.schema,
         sourceTable: table.name,
+        targetSchema: table.schema,
         targetTable: fk.referencedTable,
         constraintName: fk.name,
         columnPairs: [],
@@ -92,20 +116,24 @@ function directRelationships(tables: Map<string, TableSchema>): RelationshipInfo
     for (const group of groupsForTable(table)) {
       const direct = directCardinality(table, group)
       relationships.push({
+        sourceSchema: group.sourceSchema,
         sourceTable: group.sourceTable,
+        targetSchema: group.targetSchema,
         targetTable: group.targetTable,
         constraintName: group.constraintName,
         cardinality: direct,
         columnPairs: group.columnPairs,
-        self: group.sourceTable === group.targetTable,
+        self: sameRelation(group.sourceSchema, group.sourceTable, group.targetSchema, group.targetTable),
       })
       relationships.push({
+        sourceSchema: group.targetSchema,
         sourceTable: group.targetTable,
+        targetSchema: group.sourceSchema,
         targetTable: group.sourceTable,
         constraintName: group.constraintName,
         cardinality: inverseCardinality(direct),
         columnPairs: group.columnPairs.map(pair => ({ source: pair.target, target: pair.source })),
-        self: group.sourceTable === group.targetTable,
+        self: sameRelation(group.sourceSchema, group.sourceTable, group.targetSchema, group.targetTable),
       })
     }
   }
@@ -122,22 +150,27 @@ function addManyToManyRelationships(tables: Map<string, TableSchema>, relationsh
       for (let j = i + 1; j < groups.length; j += 1) {
         const left = groups[i]!
         const right = groups[j]!
-        if (left.targetTable === right.targetTable) continue
 
         const junctionColumns = [
           ...left.columnPairs.map(pair => pair.source),
           ...right.columnPairs.map(pair => pair.source),
         ]
-        if (!sameSet(junctionColumns, junctionTable.primaryKey)) continue
+        // Upstream SchemaCache.addM2MRels accepts a junction when the FK-column
+        // union is contained in the primary key; the PK may contain additional
+        // columns. Equality here incorrectly hid valid relationships.
+        if (!isSubset(junctionColumns, junctionTable.primaryKey)) continue
 
         relationships.push({
+          sourceSchema: left.targetSchema,
           sourceTable: left.targetTable,
+          targetSchema: right.targetSchema,
           targetTable: right.targetTable,
           constraintName: `${left.constraintName}:${right.constraintName}`,
           cardinality: 'many-to-many',
           columnPairs: [],
-          self: false,
+          self: sameRelation(left.targetSchema, left.targetTable, right.targetSchema, right.targetTable),
           junction: {
+            schema: junctionTable.schema,
             table: junctionTable.name,
             sourceConstraint: left.constraintName,
             targetConstraint: right.constraintName,
@@ -146,13 +179,16 @@ function addManyToManyRelationships(tables: Map<string, TableSchema>, relationsh
           },
         })
         relationships.push({
+          sourceSchema: right.targetSchema,
           sourceTable: right.targetTable,
+          targetSchema: left.targetSchema,
           targetTable: left.targetTable,
           constraintName: `${right.constraintName}:${left.constraintName}`,
           cardinality: 'many-to-many',
           columnPairs: [],
-          self: false,
+          self: sameRelation(right.targetSchema, right.targetTable, left.targetSchema, left.targetTable),
           junction: {
+            schema: junctionTable.schema,
             table: junctionTable.name,
             sourceConstraint: right.constraintName,
             targetConstraint: left.constraintName,
@@ -177,28 +213,74 @@ export function isToOneRelationship(relationship: RelationshipInfo): boolean {
 }
 
 /** Return every matching candidate; ambiguity belongs to the planner/error layer. */
+function singleColumnMatch(relationship: RelationshipInfo, side: 'source' | 'target', value: string): boolean {
+  return relationship.columnPairs.length === 1 && relationship.columnPairs[0]?.[side] === value
+}
+
+function isDirectRelationship(relationship: RelationshipInfo): boolean {
+  return relationship.cardinality !== 'many-to-many'
+}
+
+/**
+ * Match PostgREST relationship selectors/hints using upstream `findRel` semantics.
+ *
+ * For ordinary relationships, an unhinted selector may be the target table, the
+ * constraint name, or (for a single-column FK) the FK column on the origin.
+ * The deprecated constraint/FK-column-as-target forms are not available when
+ * the foreign relation is a view, matching upstream `not relFTableIsView`.
+ * Once `!hint` is present, the selector itself must name the target relation and
+ * the hint may name the constraint, either single FK column, or an M2M junction.
+ *
+ * Self relationships are intentionally asymmetric, matching upstream: the
+ * to-one side is selected by its FK column (`parent(...)`), while the inverse
+ * to-many side is selected by the table name and disambiguated with the FK
+ * column (`children:table!parent(...)`). Upstream still marks self O2O/M2M
+ * disambiguation as TODO, so we do not invent behavior for those cases here.
+ */
 export function findRelationshipCandidates(
   relationships: RelationshipInfo[],
   sourceTable: string,
-  targetTable: string,
+  targetSelector: string,
   hint?: string,
 ): RelationshipInfo[] {
-  let candidates = relationships.filter(
-    relationship => relationship.sourceTable === sourceTable && relationship.targetTable === targetTable,
+  const computed = relationships.filter(relationship =>
+    relationship.sourceTable === sourceTable
+    && relationship.computed?.functionName === targetSelector,
   )
+  if (computed.length) return computed
 
-  if (hint) {
-    candidates = candidates.filter(relationship => {
-      if (relationship.constraintName === hint) return true
-      if (relationship.columnPairs.some(pair => pair.source === hint || pair.target === hint)) return true
-      if (relationship.junction) {
-        return relationship.junction.sourceConstraint === hint || relationship.junction.targetConstraint === hint
+  return relationships.filter(relationship => {
+    if (relationship.sourceTable !== sourceTable || relationship.computed) return false
+
+    if (relationship.self) {
+      if (!hint) {
+        if (relationship.cardinality === 'one-to-many') {
+          return targetSelector === relationship.targetTable
+        }
+        if (relationship.cardinality === 'many-to-one') {
+          return singleColumnMatch(relationship, 'source', targetSelector)
+        }
+        return false
       }
-      return false
-    })
-  }
 
-  return candidates
+      return relationship.cardinality === 'one-to-many'
+        && targetSelector === relationship.targetTable
+        && singleColumnMatch(relationship, 'target', hint)
+    }
+
+    if (!hint) {
+      return targetSelector === relationship.targetTable
+        || (!relationship.targetIsView && isDirectRelationship(relationship) && relationship.constraintName === targetSelector)
+        || (!relationship.targetIsView && isDirectRelationship(relationship) && singleColumnMatch(relationship, 'source', targetSelector))
+    }
+
+    if (targetSelector !== relationship.targetTable) return false
+    if (isDirectRelationship(relationship) && relationship.constraintName === hint) return true
+    if (isDirectRelationship(relationship) && singleColumnMatch(relationship, 'source', hint)) return true
+    if (isDirectRelationship(relationship) && singleColumnMatch(relationship, 'target', hint)) return true
+    if (relationship.cardinality === 'many-to-many' && relationship.junction?.table === hint) return true
+    return false
+  })
 }
 
 export function foreignKeyRowsToPairs(rows: ForeignKeyInfo[]): RelationshipColumnPair[] {

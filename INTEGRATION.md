@@ -100,3 +100,37 @@ The replacement read planner now handles recursive/negated PostgREST boolean gro
 `...relation(*)` is expanded **before SQL compilation** using the existing per-schema `SchemaCache`. `information_schema.columns` is already fetched in ordinal-position order and stored in an insertion-ordered `Map`, so spread-star receives a deterministic ordered field list without adding any PGlite-specific dependency to the compiler.
 
 Only spread contexts expand `*`. Ordinary non-spread `relation(*)` remains `table.*` and keeps object/array row shaping. Nested spread relations expand independently. The pure SQL compiler retains a guard against an unexpanded spread `*`; that is an invariant check, not a public HTTP limitation when requests flow through `compat-router.ts`.
+
+
+## Optional observability hook
+
+The public router accepts an optional structured observer without introducing a DiagramCraft dependency or changing request behavior:
+
+```ts
+const api = createPostgRESTRouter(sql, {
+  observer(event) {
+    diagnostics.push(event)
+  },
+  observerOptions: {
+    includeHeaders: true,
+    includeParams: false,
+  },
+})
+```
+
+The public boundary emits request lifecycle events and wraps the SQLExecutor so generated/executed SQL, timings, row counts, transaction context, SQLSTATE errors, and final response status can be inspected. Header and parameter capture are opt-in; Authorization/Cookie headers are redacted by default, and observer exceptions are swallowed so diagnostics cannot alter adapter behavior.
+
+## Auth / RLS boundary verification
+
+PostgREST request authorization remains intentionally split from Supabase Auth. The gateway/auth layer verifies the session token, then `transactionContext(request, schema)` translates that verified identity into `role` plus request-local PostgreSQL settings such as `request.jwt.claims`. Every table read/write and RPC execution path goes through the same `inTx(...)` boundary; the SQLExecutor transaction implementation is responsible for applying `SET LOCAL ROLE` / `set_config(..., true)` before executing request SQL.
+
+The legacy `src/auth.ts` helper is not the authoritative PostgREST/Supabase auth boundary and is not exported from the package root. Do not treat decoded-but-unverified bearer claims as database identity. Storage/Auth service emulation remains outside this PostgREST adapter even when those services share the same PostgreSQL backend.
+
+Transaction context is also sanitized for telemetry: schema/role/tx disposition may be observed, but `settings` are omitted unless `includeSettings: true`; JWT/authorization/cookie/secret/token-like setting names are redacted by default even when settings are enabled.
+
+
+## 2026-09-07 integration checkpoint
+
+For ambiguous relationships, preserve hosted PostgREST behavior rather than choosing an FK. Callers must use `relation!column(...)` or `relation!constraint_name(...)`; e.g. `grants:profile_roles!profile_id(role:roles(key))`. The adapter returns PGRST201/300 with candidate `details` and a disambiguation `hint` when the selector is under-specified.
+
+Authenticated execution is supplied by the host through `transactionContext`. The host must verify the Supabase/GoTrue session and provide `role` plus PostgreSQL settings such as `request.jwt.claims`. Embedded reads are compiled into the same request SQL/transaction as the root relation, so child-table RLS is evaluated by PostgreSQL under that same session context. This release has transaction-boundary regression coverage for flat read/write, embedded read and RPC; a real-policy PGlite embed smoke remains a useful downstream integration smoke rather than adapter-side JWT verification.
