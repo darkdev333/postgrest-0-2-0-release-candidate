@@ -1,0 +1,61 @@
+name: Publish npm package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Use current npm CLI
+        run: npm install --global npm@latest
+
+      - name: Verify release tag matches package version
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match package version v${VERSION}."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Inspect package contents
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          # Bootstrap only: create an NPM_TOKEN repository/environment secret for
+          # the first publication. Once npm Trusted Publishing is configured for
+          # this workflow, delete the secret; modern npm will use GitHub OIDC.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
