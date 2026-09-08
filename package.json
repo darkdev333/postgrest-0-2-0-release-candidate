@@ -1,5 +1,5 @@
 {
-  "name": "postgrest-compat",
+  "name": "@sci-ence/postgrest-compat",
   "version": "0.2.0",
   "description": "Browser- and Worker-friendly TypeScript compatibility adapter for the PostgREST HTTP API",
   "type": "module",
@@ -18,6 +18,10 @@
     "LICENSE",
     "NOTICE.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -62,6 +66,5 @@
   "homepage": "https://github.com/darkdev333/postgrest-0-2-0-release-candidate#readme",
   "bugs": {
     "url": "https://github.com/darkdev333/postgrest-0-2-0-release-candidate/issues"
-  },
-  "private": true
+  }
 }
